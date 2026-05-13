@@ -547,6 +547,18 @@
                     <div class="panel" id="panel-yolo">
                         <div class="panel-title">YOLO Settings</div>
                         <div class="field">
+                            <label>Morphology Model</label>
+                            <select id="morphology-model-path">
+                                <option value="">Loading models...</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label>Tracer Model</label>
+                            <select id="tracer-model-path">
+                                <option value="">Loading models...</option>
+                            </select>
+                        </div>
+                        <div class="field">
                             <label>Morphology Confidence (0.0 - 1.0)</label>
                             <input type="number" id="morphology-threshold" placeholder="e.g. 0.35" min="0" max="1" step="0.01" />
                         </div>
@@ -612,15 +624,6 @@
                         <div class="field">
                             <label>PIV Working Max Size (px)</label>
                             <input type="number" id="piv-max-size" placeholder="384" min="32" step="32" />
-                        </div>
-                        <label class="check-field">
-                            <input type="checkbox" id="cv-roi-enabled" />
-                            <span>Use Velocity ROI</span>
-                        </label>
-                        <div class="vgcp-toolbar">
-                            <button type="button" id="btn-draw-cv-roi">Draw Region</button>
-                            <button type="button" id="btn-clear-cv-roi" class="danger">Delete ROI</button>
-                            <span id="cv-roi-count">0 point(s)</span>
                         </div>
                         <label class="check-field">
                             <input type="checkbox" id="enable-stiv" checked />

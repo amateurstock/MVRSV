@@ -25,6 +25,8 @@ const btnPause      = document.getElementById('btn-pause');
 const btnDisconnect = document.getElementById('btn-disconnect');
 const btnResults    = document.getElementById('btn-results');
 const cameraSelect  = document.getElementById('camera-select');
+const morphologyModelSelect = document.getElementById('morphology-model-path');
+const tracerModelSelect = document.getElementById('tracer-model-path');
 const timelineWrap = document.getElementById('timeline-wrap');
 const timelineSlider = document.getElementById('timeline-slider');
 const timelineCurrent = document.getElementById('timeline-current');
@@ -201,9 +203,6 @@ let points     = [];
 let dragging   = null;
 let dragOffset = { x: 0, y: 0 };
 let draggingStivHandle = null;
-let isDrawingCvRoi = false;
-let cvRoiPreview = null;
-let cvRoiPoints = [];
 
 const stivLine = {
     startX: 5,
@@ -214,7 +213,6 @@ const stivLine = {
 
 const POINT_RADIUS = 7;
 const STIV_HANDLE_RADIUS = 8;
-const ROI_POINT_RADIUS = 5;
 
 // Computes the contain-scaled size of the feed inside #video-viewport.
 // Replicates object-fit:contain math so #feed-wrap matches exactly.
@@ -318,103 +316,6 @@ function canvasToStivPercent(cx, cy) {
         clampPercent((cx / Math.max(canvas.width, 1)) * 100),
         clampPercent((cy / Math.max(canvas.height, 1)) * 100),
     ];
-}
-
-function canvasToRoiPercent(cx, cy) {
-    const [x, y] = canvasToStivPercent(cx, cy);
-    return { x, y };
-}
-
-function roiPercentToCanvas(point) {
-    return stivPercentToCanvas(point.x, point.y);
-}
-
-function updateCvRoiCount() {
-    const el = document.getElementById('cv-roi-count');
-    if (!el) return;
-    const suffix = isDrawingCvRoi ? ', drawing' : '';
-    el.textContent = `${cvRoiPoints.length} point(s)${suffix}`;
-}
-
-function setCvRoiDrawing(nextDrawing) {
-    isDrawingCvRoi = nextDrawing;
-    cvRoiPreview = null;
-    draggingStivHandle = null;
-    const btn = document.getElementById('btn-draw-cv-roi');
-    if (btn) {
-        btn.textContent = isDrawingCvRoi ? 'Finish Region' : 'Draw Region';
-        btn.classList.toggle('active', isDrawingCvRoi);
-    }
-    updateCvRoiCount();
-    drawPoints();
-}
-
-function clearCvRoi(disableCheckbox = true) {
-    cvRoiPoints = [];
-    cvRoiPreview = null;
-    setCvRoiDrawing(false);
-    if (disableCheckbox) {
-        document.getElementById('cv-roi-enabled').checked = false;
-    }
-    updateCvRoiCount();
-    drawPoints();
-}
-
-function drawCvRoiOverlay() {
-    if (!isCvPanelActive() || !canvas.width || !canvas.height) return;
-    if (cvRoiPoints.length === 0 && !cvRoiPreview) return;
-
-    const canvasPoints = cvRoiPoints.map(roiPercentToCanvas);
-    const previewPoint = isDrawingCvRoi && cvRoiPreview ? roiPercentToCanvas(cvRoiPreview) : null;
-
-    ctx.save();
-
-    if (canvasPoints.length >= 3) {
-        ctx.beginPath();
-        canvasPoints.forEach(([x, y], index) => {
-            if (index === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-        });
-        ctx.closePath();
-        ctx.fillStyle = 'rgba(0, 210, 210, 0.18)';
-        ctx.fill();
-    }
-
-    if (canvasPoints.length >= 1) {
-        ctx.beginPath();
-        canvasPoints.forEach(([x, y], index) => {
-            if (index === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-        });
-        if (previewPoint) {
-            ctx.lineTo(previewPoint[0], previewPoint[1]);
-        } else if (canvasPoints.length >= 3) {
-            ctx.closePath();
-        }
-        ctx.strokeStyle = '#00d2d2';
-        ctx.lineWidth = 2;
-        ctx.setLineDash(isDrawingCvRoi ? [6, 4] : []);
-        ctx.stroke();
-        ctx.setLineDash([]);
-    }
-
-    canvasPoints.forEach(([x, y], index) => {
-        ctx.beginPath();
-        ctx.arc(x, y, ROI_POINT_RADIUS, 0, Math.PI * 2);
-        ctx.fillStyle = '#00d2d2';
-        ctx.strokeStyle = '#062a2a';
-        ctx.lineWidth = 1.5;
-        ctx.fill();
-        ctx.stroke();
-
-        ctx.fillStyle = '#062a2a';
-        ctx.font = 'bold 8px Courier New';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(index + 1, x, y + 0.4);
-    });
-
-    ctx.restore();
 }
 
 function drawStivOverlay() {
@@ -555,7 +456,6 @@ function drawPoints() {
         ctx.fillText(label, lx, ly);
         ctx.restore();
     });
-    drawCvRoiOverlay();
     drawStivOverlay();
 }
 
@@ -578,15 +478,6 @@ canvas.addEventListener('mousedown', e => {
 
     if (isCvPanelActive()) {
         if (!canvas.width || !canvas.height) return;
-
-        if (isDrawingCvRoi) {
-            cvRoiPoints.push(canvasToRoiPercent(mx, my));
-            document.getElementById('cv-roi-enabled').checked = true;
-            updateCvRoiCount();
-            drawPoints();
-            canvas.style.cursor = 'crosshair';
-            return;
-        }
 
         const hit = hitTestStivHandle(mx, my);
         if (hit) {
@@ -626,13 +517,6 @@ canvas.addEventListener('mousemove', e => {
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
-
-    if (isCvPanelActive() && isDrawingCvRoi) {
-        cvRoiPreview = canvasToRoiPercent(mx, my);
-        drawPoints();
-        canvas.style.cursor = 'crosshair';
-        return;
-    }
 
     if (draggingStivHandle !== null) {
         const [xPct, yPct] = canvasToStivPercent(mx, my);
@@ -678,27 +562,6 @@ canvas.addEventListener('mouseleave', () => {
     // If mouse leaves canvas while dragging, drop the point where it is
     dragging = null;
     draggingStivHandle = null;
-    if (isDrawingCvRoi) {
-        cvRoiPreview = null;
-        drawPoints();
-    }
-});
-
-canvas.addEventListener('dblclick', e => {
-    if (!isCvPanelActive() || !isDrawingCvRoi) return;
-    e.preventDefault();
-    setCvRoiDrawing(false);
-});
-
-document.addEventListener('keydown', e => {
-    if (!isCvPanelActive()) return;
-    const targetTag = e.target && e.target.tagName ? e.target.tagName.toLowerCase() : '';
-    if (targetTag === 'input' || targetTag === 'textarea' || targetTag === 'select' || e.target.isContentEditable) return;
-    if (e.key !== 'Delete' && e.key !== 'Backspace') return;
-    if (cvRoiPoints.length === 0 && !isDrawingCvRoi) return;
-
-    e.preventDefault();
-    deleteCvRoi();
 });
 
 // ────────────────────────────────────────────────────────────────────
@@ -1072,18 +935,11 @@ function numberValue(id, fallback) {
     return Number.isFinite(value) ? value : fallback;
 }
 
-function buildComputerVisionPayload(roiOverride = null) {
-    const roiEnabled = roiOverride
-        ? roiOverride.enabled
-        : document.getElementById('cv-roi-enabled').checked;
-    const roiPoints = roiOverride ? roiOverride.points : cvRoiPoints;
-
+function buildComputerVisionPayload() {
     return {
         enable_piv: document.getElementById('enable-piv').checked,
         piv_interval: parseInt(document.getElementById('piv-interval').value) || 15,
         piv_max_size: parseInt(document.getElementById('piv-max-size').value) || 384,
-        cv_roi_enabled: roiEnabled,
-        cv_roi_points: roiPoints.map(p => ({ x: p.x / 100, y: p.y / 100 })),
         enable_stiv: document.getElementById('enable-stiv').checked,
         stiv_history: parseInt(document.getElementById('stiv-history').value) || 48,
         stiv_start_x: numberValue('stiv-start-x', 5) / 100,
@@ -1093,21 +949,38 @@ function buildComputerVisionPayload(roiOverride = null) {
     };
 }
 
-async function deleteCvRoi() {
-    const feedbackEl = document.getElementById('fb-cv');
-    clearCvRoi();
+function populateModelSelect(select, models, selectedPath) {
+    select.innerHTML = '';
+    if (!models.length) {
+        select.innerHTML = '<option value="">No models found</option>';
+        return;
+    }
+    models.forEach(path => {
+        const option = document.createElement('option');
+        option.value = path;
+        option.textContent = path.replace(/^\.?\//, '');
+        option.selected = path === selectedPath;
+        select.appendChild(option);
+    });
+}
 
-    const ok = await postJSON('/yolo_params', buildComputerVisionPayload({
-        enabled: false,
-        points: [],
-    }), feedbackEl);
-
-    if (!ok) return;
-
-    feedbackEl.className = 'post-feedback ok';
-    feedbackEl.textContent = '✓ ROI deleted';
-    await disconnectStream();
-    connectStream();
+async function loadModelOptions() {
+    const feedbackEl = document.getElementById('fb-yolo');
+    try {
+        const res = await fetch('/model_options');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+            throw new Error(data.error || `Server returned ${res.status}`);
+        }
+        const models = Array.isArray(data.models) ? data.models : [];
+        populateModelSelect(morphologyModelSelect, models, data.morphology_model_path);
+        populateModelSelect(tracerModelSelect, models, data.tracer_model_path);
+    } catch (error) {
+        morphologyModelSelect.innerHTML = '<option value="">Could not load models</option>';
+        tracerModelSelect.innerHTML = '<option value="">Could not load models</option>';
+        feedbackEl.className = 'post-feedback err';
+        feedbackEl.textContent = `✗ ${error.message || 'Could not load models'}`;
+    }
 }
 
 ['stiv-start-x', 'stiv-start-y', 'stiv-end-x', 'stiv-end-y'].forEach(id => {
@@ -1116,26 +989,6 @@ async function deleteCvRoi() {
         drawPoints();
     });
 });
-
-document.getElementById('btn-draw-cv-roi').addEventListener('click', () => {
-    if (isDrawingCvRoi) {
-        setCvRoiDrawing(false);
-        return;
-    }
-    cvRoiPoints = [];
-    document.getElementById('cv-roi-enabled').checked = true;
-    setCvRoiDrawing(true);
-});
-
-document.getElementById('btn-clear-cv-roi').addEventListener('click', deleteCvRoi);
-document.getElementById('cv-roi-enabled').addEventListener('change', e => {
-    if (!e.target.checked) {
-        deleteCvRoi();
-        return;
-    }
-    drawPoints();
-});
-updateCvRoiCount();
 
 async function uploadVideo() {
     const input = document.getElementById('video-file');
@@ -1168,7 +1021,6 @@ async function uploadVideo() {
         updateCalibrationReadout(data);
         updateResultsDisplay({ ok: true, row_count: 0, metrics: {} });
         await disconnectStream();
-        clearCvRoi();
         points = [];
         dragging = null;
         drawPoints();
@@ -1242,7 +1094,6 @@ async function useCameraSource() {
     updateCalibrationReadout(result.data);
     updateResultsDisplay({ ok: true, row_count: 0, metrics: {} });
     document.getElementById('video-ortho').checked = false;
-    clearCvRoi();
     points = [];
     dragging = null;
     drawPoints();
@@ -1261,7 +1112,6 @@ async function resetOrthorectification() {
     feedbackEl.textContent = '✓ Raw video reset; orthorectification cleared';
     updateCalibrationReadout(result.data);
     document.getElementById('video-ortho').checked = false;
-    clearCvRoi();
     points = [];
     dragging = null;
     drawPoints();
@@ -1278,6 +1128,7 @@ document.getElementById('btn-stop-results').addEventListener('click', () => load
 document.getElementById('btn-refresh-results').addEventListener('click', () => loadResults());
 document.getElementById('btn-reset-results').addEventListener('click', resetResults);
 loadCameraDevices();
+loadModelOptions();
 refreshCalibrationStatus();
 updateResultsDisplay({ ok: true, row_count: 0, metrics: {} });
 
@@ -1314,6 +1165,8 @@ document.getElementById('btn-post-cam').addEventListener('click', async () => {
 
 document.getElementById('btn-post-yolo').addEventListener('click', async () => {
     const ok = await postJSON('/yolo_params', {
+        morphology_model_path: morphologyModelSelect.value,
+        tracer_model_path: tracerModelSelect.value,
         threshold: parseFloat(document.getElementById('yolo-threshold').value) || 0.25,
         morphology_threshold: parseFloat(document.getElementById('morphology-threshold').value) || 0.35,
         tracer_threshold: parseFloat(document.getElementById('yolo-threshold').value) || 0.25,
@@ -1335,18 +1188,6 @@ document.getElementById('btn-post-yolo').addEventListener('click', async () => {
 
 document.getElementById('btn-post-cv').addEventListener('click', async () => {
     const feedbackEl = document.getElementById('fb-cv');
-    const roiEnabled = document.getElementById('cv-roi-enabled').checked;
-
-    if (isDrawingCvRoi) {
-        setCvRoiDrawing(false);
-    }
-
-    if (roiEnabled && cvRoiPoints.length < 3) {
-        feedbackEl.className = 'post-feedback err';
-        feedbackEl.textContent = '✗ Draw at least 3 region points';
-        return;
-    }
-
     const ok = await postJSON('/yolo_params', buildComputerVisionPayload(), feedbackEl);
     if (!ok) return;
     await disconnectStream();

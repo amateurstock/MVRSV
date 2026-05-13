@@ -19,6 +19,7 @@ Notes for research reporting:
 import csv
 import gc
 import math as mt
+import tempfile
 import threading
 import time
 from collections import deque
@@ -30,7 +31,7 @@ import cv2
 import numpy as np
 import torch
 from cv2.typing import MatLike
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, abort
 from ultralytics import YOLO
 from werkzeug.utils import secure_filename
 
@@ -41,12 +42,14 @@ from werkzeug.utils import secure_filename
 app = Flask(__name__)
 
 VIDEO_SRC = "./test/AlpineStabilised.avi"
-MORPHOLOGY_MODEL_PATH = "./models/morphology_model.pt"
-TRACER_MODEL_PATH = "./models/tracer_model.pt"
+MORPHOLOGY_MODEL_PATH = "models/morphology_model.pt"
+TRACER_MODEL_PATH = "models/tracer_model.pt"
+MODEL_FOLDER = Path("./models")
 UPLOAD_FOLDER = Path("./uploads")
 LOG_FOLDER = Path("./logs")
 VALIDATION_CSV = LOG_FOLDER / "river_velocity_validation_log.csv"
 ALLOWED_VIDEO_EXTENSIONS = {".avi", ".mp4", ".mov", ".mkv", ".webm"}
+ALLOWED_MODEL_EXTENSIONS = {".pt", ".onnx"}
 MAX_CAMERA_SCAN_INDEX = 10
 PROFILE_HISTORY_LIMIT = 120
 
@@ -63,6 +66,8 @@ current_video_src = VIDEO_SRC
 current_source_kind = "video"
 requested_seek_frame = None
 active_stream_token = 0
+selected_morphology_model_path = MORPHOLOGY_MODEL_PATH
+selected_tracer_model_path = TRACER_MODEL_PATH
 
 playback_info = {
     "source_kind": current_source_kind,
@@ -136,9 +141,9 @@ global_vars = {
     "stiv_end_x": 0.95,
     "stiv_end_y": 0.50,
 
-    # Optional hand-drawn ROI for PIV/STIV
-    "cv_roi_enabled": False,
-    "cv_roi_points": [],
+    # Model selection
+    "morphology_model_path": MORPHOLOGY_MODEL_PATH,
+    "tracer_model_path": TRACER_MODEL_PATH,
 }
 
 global_vgcps = []
@@ -149,8 +154,11 @@ global_vgcps = []
 
 morphology_model = None
 tracer_model = None
+morphology_model_loaded_path = None
+tracer_model_loaded_path = None
 inference_device = None
 inference_device_label = None
+onnx_cuda_available = None
 
 
 def get_inference_device():
@@ -172,27 +180,126 @@ def get_inference_device_label():
 
 
 def reset_yolo_models():
-    global morphology_model, tracer_model
+    global morphology_model, tracer_model, morphology_model_loaded_path, tracer_model_loaded_path
     morphology_model = None
     tracer_model = None
+    morphology_model_loaded_path = None
+    tracer_model_loaded_path = None
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
 
+def is_onnx_model(path):
+    return Path(str(path)).suffix.lower() == ".onnx"
+
+
+def can_use_onnx_cuda():
+    global onnx_cuda_available
+    if onnx_cuda_available is not None:
+        return onnx_cuda_available
+    try:
+        import onnx
+        import onnxruntime as ort
+        from onnx import TensorProto, helper
+
+        if "CUDAExecutionProvider" not in ort.get_available_providers():
+            raise RuntimeError("CUDAExecutionProvider is not available in ONNX Runtime.")
+
+        x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [1])
+        y = helper.make_tensor_value_info("y", TensorProto.FLOAT, [1])
+        node = helper.make_node("Identity", ["x"], ["y"])
+        graph = helper.make_graph([node], "cuda_probe", [x], [y])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        model.ir_version = 10
+
+        with tempfile.NamedTemporaryFile(suffix=".onnx") as f:
+            onnx.save(model, f.name)
+            session = ort.InferenceSession(
+                f.name,
+                providers=[("CUDAExecutionProvider", {"device_id": 0}), "CPUExecutionProvider"],
+            )
+            onnx_cuda_available = "CUDAExecutionProvider" in session.get_providers()
+    except Exception as exc:
+        print(f"ONNX CUDA unavailable: {exc}")
+        onnx_cuda_available = False
+    return onnx_cuda_available
+
+
+def get_model_predict_device(path):
+    if is_onnx_model(path):
+        if not can_use_onnx_cuda():
+            raise RuntimeError(
+                f"ONNX model '{path}' requires CUDAExecutionProvider, but ONNX CUDA is unavailable."
+            )
+        return "cuda:0"
+    return get_inference_device()
+
+
+def predict_yolo_model(model, frame, conf, imgsz, model_path):
+    global onnx_cuda_available
+    device = get_model_predict_device(model_path)
+    try:
+        return model.predict(
+            frame,
+            conf=conf,
+            imgsz=imgsz,
+            device=device,
+            half=device.startswith("cuda"),
+            verbose=False,
+        )[0]
+    except Exception as exc:
+        if is_onnx_model(model_path) and device.startswith("cuda"):
+            onnx_cuda_available = False
+            raise RuntimeError(f"ONNX CUDA inference failed for '{model_path}'.") from exc
+        raise
+
+
+def list_available_models():
+    models = []
+    for path in sorted(MODEL_FOLDER.glob("*")):
+        if path.is_file() and path.suffix.lower() in ALLOWED_MODEL_EXTENSIONS:
+            models.append(str(path))
+    return models
+
+
+def validate_model_path(path, default_path):
+    candidate = Path(str(path or default_path))
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(MODEL_FOLDER.resolve())
+    except (OSError, ValueError):
+        return default_path
+    if resolved.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
+        return default_path
+    if not resolved.exists() or not resolved.is_file():
+        return default_path
+    return str(resolved.relative_to(Path.cwd()))
+
+
 def get_morphology_model():
-    global morphology_model
-    if morphology_model is None:
-        morphology_model = YOLO(MORPHOLOGY_MODEL_PATH)
-        morphology_model.to(get_inference_device())
+    global morphology_model, morphology_model_loaded_path
+    with lock:
+        path = selected_morphology_model_path
+    if morphology_model is None or morphology_model_loaded_path != path:
+        morphology_model = YOLO(path, task="segment")
+        morphology_model_loaded_path = path
+        if not is_onnx_model(path):
+            morphology_model.to(get_inference_device())
     return morphology_model
 
 
 def get_tracer_model():
-    global tracer_model
-    if tracer_model is None:
-        tracer_model = YOLO(TRACER_MODEL_PATH)
-        tracer_model.to(get_inference_device())
+    global tracer_model, tracer_model_loaded_path
+    with lock:
+        path = selected_tracer_model_path
+    if tracer_model is None or tracer_model_loaded_path != path:
+        tracer_model = YOLO(path, task="detect")
+        tracer_model_loaded_path = path
+        if not is_onnx_model(path):
+            tracer_model.to(get_inference_device())
     return tracer_model
 
 
@@ -311,40 +418,6 @@ def get_bool(data, key, default=False):
     if isinstance(value, str):
         return value.lower() in {"1", "true", "yes", "on"}
     return bool(value)
-
-
-def get_normalized_roi_points(points):
-    if not isinstance(points, list):
-        return []
-
-    parsed = []
-    for point in points:
-        if isinstance(point, dict):
-            raw_x = point.get("x")
-            raw_y = point.get("y")
-        elif isinstance(point, (list, tuple)) and len(point) >= 2:
-            raw_x, raw_y = point[0], point[1]
-        else:
-            continue
-
-        try:
-            x = float(raw_x)
-            y = float(raw_y)
-        except (TypeError, ValueError):
-            continue
-
-        if not np.isfinite(x) or not np.isfinite(y):
-            continue
-
-        parsed.append({
-            "x": max(0.0, min(1.0, x)),
-            "y": max(0.0, min(1.0, y)),
-        })
-
-        if len(parsed) >= 64:
-            break
-
-    return parsed if len(parsed) >= 3 else []
 
 
 def is_allowed_video(filename):
@@ -641,36 +714,16 @@ def draw_tracer_trails(frame, trails):
             cv2.line(frame, trail[i - 1], trail[i], (0, 200, 255), 2)
 
 
-def build_cv_roi_mask(shape, enabled, points):
-    if not enabled or len(points) < 3:
-        return None, None
-
-    h, w = shape[:2]
-    polygon = np.array([
-        [
-            int(round(max(0.0, min(1.0, p["x"])) * (w - 1))),
-            int(round(max(0.0, min(1.0, p["y"])) * (h - 1))),
-        ]
-        for p in points
-    ], dtype=np.int32)
-
-    if len(polygon) < 3 or abs(cv2.contourArea(polygon)) < 16:
-        return None, None
-
+def build_velocity_mask(shape, polygons, boxes):
     mask = np.zeros(shape, dtype=np.uint8)
-    cv2.fillPoly(mask, [polygon], 255)
+    for polygon in polygons:
+        if len(polygon) >= 3:
+            cv2.fillPoly(mask, [polygon], 255)
+    for x1, y1, x2, y2 in boxes:
+        cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
     if np.count_nonzero(mask) < 16:
-        return None, None
-    return mask, polygon
-
-
-def draw_cv_roi_overlay(frame, polygon):
-    if polygon is None or len(polygon) < 3:
-        return
-    overlay = frame.copy()
-    cv2.fillPoly(overlay, [polygon], (255, 255, 0))
-    cv2.addWeighted(overlay, 0.14, frame, 0.86, 0, frame)
-    cv2.polylines(frame, [polygon], True, (255, 255, 0), 2)
+        mask.fill(255)
+    return mask
 
 
 def point_in_mask(mask, x, y):
@@ -681,13 +734,6 @@ def point_in_mask(mask, x, y):
     yi = int(round(float(y)))
     return 0 <= xi < w and 0 <= yi < h and mask[yi, xi] > 0
 
-
-def filter_detections_by_mask(detections, mask):
-    return [
-        detection
-        for detection in detections
-        if point_in_mask(mask, detection["point"][0], detection["point"][1])
-    ]
 
 # ============================================================
 # RESEARCH-ORIENTED PIV
@@ -1231,6 +1277,7 @@ def generate_frames(stream_token):
             current_frame_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or 0)
             frame_index = max(0, current_frame_pos - 1) if kind == "video" else frame_counter
 
+            frame_delta = 1
             if kind == "video" and state.prev_frame_index is not None:
                 frame_delta = max(1, frame_index - state.prev_frame_index)
                 frame_dt = frame_delta / source_fps
@@ -1271,40 +1318,25 @@ def generate_frames(stream_token):
             )
             if morphology_due:
                 t = time.perf_counter()
-                device = get_inference_device()
-                result = get_morphology_model().predict(
+                with lock:
+                    morphology_model_path = selected_morphology_model_path
+                result = predict_yolo_model(
+                    get_morphology_model(),
                     frame,
-                    conf=float(global_vars["morphology_threshold"]),
-                    imgsz=int(global_vars["morphology_imgsz"]),
-                    device=device,
-                    half=device.startswith("cuda"),
-                    verbose=False,
-                )[0]
+                    float(global_vars["morphology_threshold"]),
+                    int(global_vars["morphology_imgsz"]),
+                    morphology_model_path,
+                )
                 record_stage(profile_times, "morphology_yolo_ms", t)
                 state.morphology_polygons, state.morphology_boxes = extract_morphology_overlay(result, gray.shape)
 
             draw_morphology_overlay(display, state.morphology_polygons, state.morphology_boxes)
-            with lock:
-                roi_enabled = bool(global_vars["cv_roi_enabled"])
-                roi_points = [dict(p) for p in global_vars["cv_roi_points"]]
-            velocity_roi_mask, roi_polygon = build_cv_roi_mask(gray.shape, roi_enabled, roi_points)
-            if velocity_roi_mask is not None:
-                draw_cv_roi_overlay(display, roi_polygon)
-            else:
-                state.track_pts = None
-                state.track_labels = []
-                state.tracer_trails = []
-                state.latest_tracer_velocity = None
-                state.latest_piv_velocity = None
-                state.latest_stiv_velocity = None
-                state.latest_tracer_count = 0
-                state.stiv_rows.clear()
-                state.velocity_history.clear()
+            velocity_mask = build_velocity_mask(gray.shape, state.morphology_polygons, state.morphology_boxes)
 
-            # Tracer optical flow is intentionally restricted to the hand-drawn ROI.
+            # Tracer optical flow is restricted to the morphology mask when available.
             tracer_velocity = None
             tracked_points = 0
-            if velocity_roi_mask is not None and state.prev_gray is not None and state.track_pts is not None and len(state.track_pts) > 0:
+            if state.prev_gray is not None and state.track_pts is not None and len(state.track_pts) > 0:
                 t = time.perf_counter()
                 next_pts, of_status, _ = cv2.calcOpticalFlowPyrLK(
                     state.prev_gray,
@@ -1330,7 +1362,7 @@ def generate_frames(stream_token):
                     for src_idx, new, old in zip(valid_indexes, good_new, good_old):
                         a, b = new.ravel()
                         c, d = old.ravel()
-                        if not point_in_mask(velocity_roi_mask, a, b) or not point_in_mask(velocity_roi_mask, c, d):
+                        if not point_in_mask(velocity_mask, a, b) or not point_in_mask(velocity_mask, c, d):
                             continue
                         dx, dy = a - c, b - d
                         disp_px = mt.hypot(float(dx), float(dy))
@@ -1358,52 +1390,55 @@ def generate_frames(stream_token):
 
             draw_tracer_trails(display, state.tracer_trails)
 
-            # PIV is intentionally restricted to the hand-drawn ROI.
+            # PIV is restricted to the morphology mask when available.
             piv_velocity = None
             piv_vector_count = 0
             piv_std = None
             if (
-                velocity_roi_mask is not None
-                and global_vars["enable_piv"]
+                global_vars["enable_piv"]
                 and state.prev_gray is not None
                 and frame_counter % max(1, int(global_vars["piv_interval"])) == 0
             ):
                 t = time.perf_counter()
-                piv_velocity, piv_flow, piv_vector_count, piv_std = estimate_piv_velocity(state.prev_gray, gray, velocity_roi_mask, frame_dt)
+                piv_velocity, piv_flow, piv_vector_count, piv_std = estimate_piv_velocity(state.prev_gray, gray, velocity_mask, frame_dt)
                 record_stage(profile_times, "piv_ms", t)
                 if piv_velocity is not None:
                     state.latest_piv_velocity = piv_velocity
-                    draw_piv_vectors(display, piv_flow, velocity_roi_mask)
+                    draw_piv_vectors(display, piv_flow, velocity_mask)
 
-            # STIV is intentionally restricted to the hand-drawn ROI.
+            # STIV is restricted to the morphology mask when available.
             stiv_velocity = None
             stiv_start = stiv_end = None
-            if velocity_roi_mask is not None and global_vars["enable_stiv"]:
+            if global_vars["enable_stiv"]:
                 t = time.perf_counter()
-                stiv_velocity, stiv_start, stiv_end = update_stiv_velocity(state.stiv_rows, gray, velocity_roi_mask, frame_dt)
+                stiv_velocity, stiv_start, stiv_end = update_stiv_velocity(state.stiv_rows, gray, velocity_mask, frame_dt)
                 record_stage(profile_times, "stiv_ms", t)
                 if stiv_velocity is not None:
                     state.latest_stiv_velocity = stiv_velocity
                 if stiv_start is not None and stiv_end is not None:
                     cv2.line(display, stiv_start, stiv_end, (255, 0, 255), 1)
 
-            # Tracer detection after velocity update, throttled and restricted to the ROI.
-            if velocity_roi_mask is not None and frame_counter - state.last_tracer_detection_frame >= int(global_vars["detect_interval"]):
+            # Tracer detection after velocity update, throttled and restricted to the morphology mask.
+            if frame_counter - state.last_tracer_detection_frame >= int(global_vars["detect_interval"]):
                 state.last_tracer_detection_frame = frame_counter
                 t = time.perf_counter()
-                device = get_inference_device()
-                result = get_tracer_model().predict(
+                with lock:
+                    tracer_model_path = selected_tracer_model_path
+                result = predict_yolo_model(
+                    get_tracer_model(),
                     frame,
-                    conf=float(global_vars["tracer_threshold"]),
-                    imgsz=int(global_vars["tracer_imgsz"]),
-                    device=device,
-                    half=device.startswith("cuda"),
-                    verbose=False,
-                )[0]
+                    float(global_vars["tracer_threshold"]),
+                    int(global_vars["tracer_imgsz"]),
+                    tracer_model_path,
+                )
                 record_stage(profile_times, "tracer_yolo_ms", t)
                 detections = extract_tracer_points(result)
                 detections = filter_tracer_detections(detections)
-                detections = filter_detections_by_mask(detections, velocity_roi_mask)
+                detections = [
+                    detection
+                    for detection in detections
+                    if point_in_mask(velocity_mask, detection["point"][0], detection["point"][1])
+                ]
                 state.latest_tracer_count = len(detections)
                 draw_tracer_points(display, detections)
                 if detections:
@@ -1436,7 +1471,8 @@ def generate_frames(stream_token):
             state.prev_frame_index = frame_index
             state.prev_capture_time = capture_time
 
-            # Timeline sync: skip only for display, but frame_dt handles skipped frames.
+            # Keep file videos frame-accurate for velocity estimation. If processing is slower
+            # than the source FPS, playback slows down instead of skipping source frames.
             video_skipped_frames = 0
             target_stream_fps = max(1.0, min(30.0, target_stream_fps))
             target_frame_time = 1.0 / target_stream_fps
@@ -1444,14 +1480,6 @@ def generate_frames(stream_token):
             sleep_time = target_frame_time - processing_time
             if sleep_time > 0:
                 time.sleep(sleep_time)
-            elif kind == "video":
-                elapsed = max(processing_time, 1.0 / source_fps)
-                frames_elapsed = max(1, int(round(elapsed * source_fps)))
-                video_skipped_frames = max(0, frames_elapsed - 1)
-                total_frames = int(playback_info.get("total_frames") or 0)
-                if video_skipped_frames > 0 and total_frames > 0:
-                    next_frame = min(current_frame_pos + video_skipped_frames, total_frames - 1)
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, next_frame)
 
             now = time.perf_counter()
             dt_yield = now - last_yield_time
@@ -1484,6 +1512,7 @@ def generate_frames(stream_token):
                 "source_fps": round(source_fps, 6),
                 "processing_fps": round(processing_fps, 6),
                 "frame_dt": round(frame_dt, 6),
+                "source_frame_delta": int(frame_delta),
                 "video_skipped_frames": int(video_skipped_frames),
                 "meters_per_pixel": round(float(global_vars["meters_per_pixel"]), 8),
                 "surface_velocity_mps": "" if smoothed_surface is None else round(float(smoothed_surface), 6),
@@ -1521,6 +1550,10 @@ def index():
 
 @app.route("/video_feed")
 def video_feed():
+    with lock:
+        model_paths = [selected_morphology_model_path, selected_tracer_model_path]
+    if any(is_onnx_model(path) for path in model_paths) and not can_use_onnx_cuda():
+        abort(500, description="ONNX CUDAExecutionProvider is required but unavailable.")
     token = cull_streams(reset_models=False)
     init_cam_dims()
     return Response(generate_frames(token), mimetype="multipart/x-mixed-replace; boundary=frame")
@@ -1562,6 +1595,20 @@ def profile_stats():
 @app.route("/validation_log")
 def validation_log():
     return jsonify({"ok": True, "csv_path": str(VALIDATION_CSV), "rows_cached": list(validation_rows)[-200:]})
+
+
+@app.route("/model_options")
+def model_options():
+    with lock:
+        morphology_path = selected_morphology_model_path
+        tracer_path = selected_tracer_model_path
+    return jsonify({
+        "ok": True,
+        "models": list_available_models(),
+        "morphology_model_path": morphology_path,
+        "tracer_model_path": tracer_path,
+        "supported_extensions": sorted(ALLOWED_MODEL_EXTENSIONS),
+    })
 
 
 @app.route("/results_summary", methods=["GET", "POST"])
@@ -1636,8 +1683,6 @@ def upload_video():
         global_vars["H"] = None
         global_vars["ortho_status"] = "VGCP calibration optional; using raw scale"
         global_vars["is_paused"] = False
-        global_vars["cv_roi_enabled"] = False
-        global_vars["cv_roi_points"] = []
         global_vgcps.clear()
         playback_info.update(metadata)
         payload = calibration_status_payload()
@@ -1695,8 +1740,6 @@ def set_camera_source():
         global_vars["H"] = None
         global_vars["is_ortho"] = False
         global_vars["ortho_status"] = "Camera source selected; using raw scale"
-        global_vars["cv_roi_enabled"] = False
-        global_vars["cv_roi_points"] = []
         global_vgcps.clear()
         playback_info.update(metadata)
         payload = calibration_status_payload()
@@ -1740,8 +1783,6 @@ def reset_orthorectification():
         global_vars["H"] = None
         global_vars["ortho_status"] = "VGCP calibration optional; using raw scale"
         global_vars["is_ortho"] = False
-        global_vars["cv_roi_enabled"] = False
-        global_vars["cv_roi_points"] = []
         global_vgcps.clear()
         payload = calibration_status_payload()
     cull_streams(reset_models=False)
@@ -1763,6 +1804,7 @@ def cam_settings():
 
 @app.route("/yolo_params", methods=["POST"])
 def yolo_params():
+    global selected_morphology_model_path, selected_tracer_model_path
     data = request.get_json() or {}
     numeric_float = [
         ("morphology_threshold", 0.0, 1.0), ("tracer_threshold", 0.0, 1.0),
@@ -1782,7 +1824,8 @@ def yolo_params():
         ("piv_min_vectors", 1, None), ("piv_max_displacement_px", 1, None),
         ("stiv_history", 2, None),
     ]
-    bools = ["enable_piv", "enable_stiv", "cv_roi_enabled"]
+    bools = ["enable_piv", "enable_stiv"]
+    reset_models = False
     with lock:
         for key, lo, hi in numeric_float:
             if key in data:
@@ -1798,12 +1841,23 @@ def yolo_params():
             target_kind = str(data.get("tracer_target_kind", "all") or "all").strip()
             global_vars["tracer_target_kind"] = target_kind if target_kind else "all"
 
-        if "cv_roi_points" in data:
-            global_vars["cv_roi_points"] = get_normalized_roi_points(data.get("cv_roi_points", []))
+        if "morphology_model_path" in data:
+            next_path = validate_model_path(data.get("morphology_model_path"), selected_morphology_model_path)
+            if next_path != selected_morphology_model_path:
+                selected_morphology_model_path = next_path
+                global_vars["morphology_model_path"] = next_path
+                reset_models = True
+
+        if "tracer_model_path" in data:
+            next_path = validate_model_path(data.get("tracer_model_path"), selected_tracer_model_path)
+            if next_path != selected_tracer_model_path:
+                selected_tracer_model_path = next_path
+                global_vars["tracer_model_path"] = next_path
+                reset_models = True
 
         if global_vars["H"] is not None:
             global_vars["meters_per_pixel"] = 1.0 / max(float(global_vars["px_scale"]), 1e-6)
-    cull_streams(reset_models=False)
+    cull_streams(reset_models=reset_models)
     return jsonify({"ok": True, "settings": jsonify_safe_settings()})
 
 
