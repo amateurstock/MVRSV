@@ -1,0 +1,9 @@
+logs/
+models/
+old/
+pdtrain.yaml
+seg/
+test/
+time_stomp.txt
+validation_logs/
+venv/

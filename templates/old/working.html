@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UI Prototype</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #f0ece4;
+      --panel:     #faf8f4;
+      --border:    #c8c0b0;
+      --accent:    #1a5c96;
+      --accent-h:  #0f3f6e;
+      --danger:    #b03020;
+      --text:      #1a1a1a;
+      --muted:     #6a6258;
+      --point-clr: #e05c10;
+      --point-sel: #1a5c96;
+      --input-bg:  #fff;
+      --row-alt:   #f0ece4;
+    }
+
+    html, body { height: 100%; }
+
+    body {
+      font-family: 'Courier New', Courier, monospace;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── HEADER ── */
+    header {
+      flex-shrink: 0;
+      text-align: center;
+      padding: .45rem 1rem;
+      background: var(--accent);
+      color: #fff;
+      border-bottom: 3px solid var(--accent-h);
+    }
+    header h2 { font-size: 1rem; letter-spacing: .08em; text-transform: uppercase; }
+    header p  { font-size: .7rem; color: rgba(255,255,255,.7); margin-top: .15rem; line-height: 1.5; }
+
+    /* ── MAIN ── */
+    .ui {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    /* ── VIDEO SPACE ── */
+    .video_space {
+      width: 70%;
+      background: #111;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Fills all space above the stream-bar. #feed-wrap is centered inside. */
+    #video-viewport {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    /* Sized by JS to contain-scaled feed dimensions, centered via transform. */
+    #feed-wrap {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      /* width + height set by JS */
+    }
+
+    /* Feed and canvas stack exactly on top of each other inside #feed-wrap. */
+    #feed,
+    #canvas {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    #feed   { visibility: hidden; }
+    #canvas { cursor: crosshair; }
+
+    #video-placeholder {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      color: #444;
+      font-size: .8rem;
+      letter-spacing: .1em;
+      text-align: center;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    /* Stream bar sits below the viewport, never overlaps the canvas. */
+    .stream-bar {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+      padding: .45rem .75rem;
+      background: #1a1a1a;
+      border-top: 1px solid #333;
+    }
+    .stream-bar button {
+      font-family: inherit;
+      font-size: .7rem;
+      padding: .3rem .75rem;
+      border: 1px solid rgba(255,255,255,.25);
+      background: rgba(255,255,255,.1);
+      color: #fff;
+      cursor: pointer;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .stream-bar button:hover  { background: rgba(255,255,255,.22); }
+    .stream-bar button.active { background: var(--accent); border-color: var(--accent); }
+
+    #stream-status {
+      font-size: .65rem;
+      color: rgba(255,255,255,.55);
+      letter-spacing: .07em;
+      margin-left: auto;
+    }
+    #stream-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #555;
+      flex-shrink: 0;
+    }
+    #stream-dot.live  { background: #4caf50; box-shadow: 0 0 6px #4caf50; animation: blink 1.4s infinite; }
+    #stream-dot.error { background: #e53935; }
+
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* ── MENU SPACE ── */
+    .menu_space {
+      width: 30%;
+      background: var(--panel);
+      border-left: 2px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .panel-select {
+      width: 100%;
+      font-family: inherit;
+      font-size: .75rem;
+      padding: .55rem .7rem;
+      border: none;
+      border-bottom: 2px solid var(--border);
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='white'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right .75rem center;
+      flex-shrink: 0;
+    }
+
+    .panels { flex: 1; overflow-y: auto; }
+
+    .panel { display: none; padding: .85rem; }
+    .panel.active { display: block; }
+
+    .panel-title {
+      font-size: .7rem;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      color: var(--muted);
+      margin-bottom: .75rem;
+      padding-bottom: .35rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .field { margin-bottom: .65rem; }
+    .field label {
+      display: block;
+      font-size: .68rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: .25rem;
+    }
+    .field input[type="text"],
+    .field input[type="number"] {
+      width: 100%;
+      font-family: inherit;
+      font-size: .8rem;
+      padding: .38rem .5rem;
+      border: 1px solid var(--border);
+      background: var(--input-bg);
+      color: var(--text);
+    }
+    .field input:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+
+    .check-field {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      margin-bottom: .65rem;
+      cursor: pointer;
+    }
+    .check-field input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-color: var(--accent); }
+    .check-field span { font-size: .78rem; }
+
+    .post-btn {
+      font-family: inherit;
+      font-size: .72rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      padding: .45rem 1rem;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      margin-top: .5rem;
+      width: 100%;
+    }
+    .post-btn:hover { background: var(--accent-h); }
+
+    .post-feedback {
+      font-size: .65rem;
+      margin-top: .4rem;
+      letter-spacing: .05em;
+      min-height: 1em;
+      color: var(--muted);
+    }
+    .post-feedback.ok  { color: #2e7d32; }
+    .post-feedback.err { color: var(--danger); }
+
+    /* ── VGCP TABLE ── */
+    .vgcp-toolbar {
+      display: flex;
+      gap: .5rem;
+      margin-bottom: .65rem;
+      align-items: center;
+    }
+    .vgcp-toolbar span {
+      font-size: .65rem;
+      color: var(--muted);
+      margin-left: auto;
+      letter-spacing: .05em;
+    }
+    .vgcp-toolbar button {
+      font-family: inherit;
+      font-size: .68rem;
+      padding: .3rem .65rem;
+      border: 1px solid var(--border);
+      background: var(--input-bg);
+      cursor: pointer;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+    .vgcp-toolbar button:hover       { border-color: var(--accent); color: var(--accent); }
+    .vgcp-toolbar button.danger:hover { border-color: var(--danger); color: var(--danger); }
+
+    .vgcp-table-wrap { overflow-x: auto; margin-bottom: .65rem; }
+
+    table { width: 100%; border-collapse: collapse; font-size: .72rem; }
+    thead th {
+      background: var(--accent);
+      color: #fff;
+      padding: .3rem .4rem;
+      text-align: left;
+      font-weight: normal;
+      letter-spacing: .07em;
+      font-size: .65rem;
+      text-transform: uppercase;
+    }
+    tbody tr:nth-child(even) { background: var(--row-alt); }
+    tbody td { padding: .28rem .4rem; vertical-align: middle; }
+
+    tbody td input[type="number"],
+    tbody td input[type="text"] {
+      font-family: inherit;
+      font-size: .72rem;
+      width: 100%;
+      border: 1px solid transparent;
+      background: transparent;
+      padding: .1rem .2rem;
+      color: var(--text);
+    }
+    tbody td input:focus {
+      border-color: var(--accent);
+      background: var(--input-bg);
+      outline: none;
+    }
+
+    .del-btn {
+      font-family: inherit;
+      font-size: .65rem;
+      padding: .15rem .4rem;
+      border: 1px solid var(--border);
+      background: transparent;
+      cursor: pointer;
+      color: var(--danger);
+      letter-spacing: .05em;
+    }
+    .del-btn:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+    .empty-row td { color: var(--muted); font-style: italic; text-align: center; padding: .6rem; }
+
+    .pt-badge {
+      display: inline-block;
+      width: 18px; height: 18px;
+      border-radius: 50%;
+      background: var(--point-clr);
+      color: #fff;
+      font-size: .6rem;
+      text-align: center;
+      line-height: 18px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h2>UI Prototype</h2>
+  <p>Made by: name1 &nbsp;|&nbsp; name2</p>
+</header>
+
+<div class="ui">
+
+  <!-- ── VIDEO SPACE ── -->
+  <div class="video_space">
+
+    <div id="video-viewport">
+      <div id="video-placeholder">NO FEED</div>
+      <!-- #feed-wrap is sized by JS to the contain-scaled feed rect -->
+      <div id="feed-wrap">
+        <img id="feed" alt="video feed" />
+        <canvas id="canvas"></canvas>
+      </div>
+    </div>
+
+    <div class="stream-bar">
+      <div id="stream-dot"></div>
+      <button id="btn-connect" class="active">Connect</button>
+      <button id="btn-disconnect" style="display:none">Disconnect</button>
+      <span id="stream-status">idle</span>
+    </div>
+
+  </div>
+
+  <!-- ── MENU SPACE ── -->
+  <div class="menu_space">
+
+    <select class="panel-select" id="panel-select">
+      <option value="vgcp">Virtual Ground Control Points</option>
+      <option value="camera">Camera Settings</option>
+      <option value="yolo">YOLO Settings</option>
+    </select>
+
+    <div class="panels">
+
+      <!-- VGCP -->
+      <div class="panel active" id="panel-vgcp">
+        <div class="panel-title">Virtual Ground Control Points</div>
+        <div class="vgcp-toolbar">
+          <button id="btn-clear-all" class="danger">Clear All</button>
+          <span id="pt-count">0 point(s)</span>
+        </div>
+        <div class="vgcp-table-wrap">
+          <table>
+            <thead>
+              <tr><th>#</th><th>X (px)</th><th>Y (px)</th><th>R</th><th></th></tr>
+            </thead>
+            <tbody id="vgcp-tbody">
+              <tr class="empty-row"><td colspan="5">No points placed yet. Click on the video to add.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <button class="post-btn" id="btn-post-vgcp">POST to /vgcp</button>
+        <div class="post-feedback" id="fb-vgcp"></div>
+      </div>
+
+      <!-- Camera -->
+      <div class="panel" id="panel-camera">
+        <div class="panel-title">Camera Settings</div>
+        <div class="field">
+          <label>Camera Height (m)</label>
+          <input type="number" id="cam-height" placeholder="e.g. 3.5" step="any" />
+        </div>
+        <div class="field">
+          <label>Camera Azimuth (°)</label>
+          <input type="number" id="cam-azimuth" placeholder="0 – 360" step="any" />
+        </div>
+        <div class="field">
+          <label>Camera Elevation (°)</label>
+          <input type="number" id="cam-elevation" placeholder="e.g. -30" step="any" />
+        </div>
+        <div class="field">
+          <label>Camera Roll (°)</label>
+          <input type="number" id="cam-roll" placeholder="e.g. 0" step="any" />
+        </div>
+        <button class="post-btn" id="btn-post-cam">POST to /cam_settings</button>
+        <div class="post-feedback" id="fb-cam"></div>
+      </div>
+
+      <!-- YOLO -->
+      <div class="panel" id="panel-yolo">
+        <div class="panel-title">YOLO Settings</div>
+        <div class="field">
+          <label>Confidence Threshold (0.0 – 1.0)</label>
+          <input type="number" id="yolo-threshold" placeholder="e.g. 0.5" min="0" max="1" step="0.01" />
+        </div>
+        <label class="check-field">
+          <input type="checkbox" id="yolo-tracerless" />
+          <span>Tracerless mode</span>
+        </label>
+        <button class="post-btn" id="btn-post-yolo">POST to /yolo_params</button>
+        <div class="post-feedback" id="fb-yolo"></div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+//  PANEL SWITCHING
+// ─────────────────────────────────────────────
+const panelSelect = document.getElementById('panel-select');
+const allPanels   = document.querySelectorAll('.panel');
+
+panelSelect.addEventListener('change', () => {
+  allPanels.forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-' + panelSelect.value).classList.add('active');
+});
+
+// ─────────────────────────────────────────────
+//  STREAM
+// ─────────────────────────────────────────────
+const feed          = document.getElementById('feed');
+const streamDot     = document.getElementById('stream-dot');
+const streamStatus  = document.getElementById('stream-status');
+const placeholder   = document.getElementById('video-placeholder');
+const btnConnect    = document.getElementById('btn-connect');
+const btnDisconnect = document.getElementById('btn-disconnect');
+
+function connectStream() {
+  streamStatus.textContent = 'connecting…';
+  feed.onload = () => {
+    streamDot.className = 'live';
+    streamStatus.textContent = 'live';
+    feed.style.visibility = 'visible';
+    placeholder.style.display = 'none';
+    btnConnect.style.display    = 'none';
+    btnDisconnect.style.display = 'inline-block';
+    // naturalWidth/Height are now known — safe to size the canvas
+    resizeCanvas();
+  };
+  feed.onerror = () => {
+    streamDot.className = 'error';
+    streamStatus.textContent = 'error — is the server running?';
+  };
+  feed.src = '/video_feed?t=' + Date.now();
+}
+
+function disconnectStream() {
+  feed.src = '';
+  feed.style.visibility = 'hidden';
+  placeholder.style.display = '';
+  streamDot.className = '';
+  streamStatus.textContent = 'idle';
+  btnConnect.style.display    = 'inline-block';
+  btnDisconnect.style.display = 'none';
+}
+
+btnConnect.addEventListener('click', connectStream);
+btnDisconnect.addEventListener('click', disconnectStream);
+
+// ─────────────────────────────────────────────
+//  CANVAS + GROUND CONTROL POINTS
+// ─────────────────────────────────────────────
+const viewport = document.getElementById('video-viewport');
+const feedWrap = document.getElementById('feed-wrap');
+const canvas   = document.getElementById('canvas');
+const ctx      = canvas.getContext('2d');
+
+// Points store only feed-native pixel coords { x, y, r }.
+// Screen positions are always derived on the fly via feedToCanvas().
+let points     = [];
+let dragging   = null;
+let dragOffset = { x: 0, y: 0 };
+
+const POINT_RADIUS = 7;
+
+// Computes the contain-scaled size of the feed inside #video-viewport.
+// Replicates object-fit:contain math so #feed-wrap matches exactly.
+function getScaledSize() {
+  const vw = viewport.offsetWidth;
+  const vh = viewport.offsetHeight;
+  if (!feed.naturalWidth || !feed.naturalHeight) {
+    return { width: 0, height: 0 };
+  }
+  const scale = Math.min(vw / feed.naturalWidth, vh / feed.naturalHeight);
+  return {
+    width:  Math.round(feed.naturalWidth  * scale),
+    height: Math.round(feed.naturalHeight * scale),
+  };
+}
+
+// Sizes #feed-wrap (and therefore #feed + #canvas inside it) to the
+// contain-scaled feed dimensions. The centering is handled purely by CSS
+// (position:absolute + top/left 50% + transform translate(-50%,-50%)).
+// Setting canvas.width/height clears the bitmap — redraw immediately after.
+function resizeCanvas() {
+  const { width, height } = getScaledSize();
+  feedWrap.style.width  = width  + 'px';
+  feedWrap.style.height = height + 'px';
+  canvas.width  = width;
+  canvas.height = height;
+  drawPoints();
+}
+
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// feed-native px  →  canvas px
+function feedToCanvas(fx, fy) {
+  return [
+    (fx / feed.naturalWidth)  * canvas.width,
+    (fy / feed.naturalHeight) * canvas.height,
+  ];
+}
+
+// canvas px  →  feed-native px  (clamped to feed bounds)
+function canvasToFeed(cx, cy) {
+  return [
+    Math.round(Math.max(0, Math.min(cx / canvas.width,  1)) * feed.naturalWidth),
+    Math.round(Math.max(0, Math.min(cy / canvas.height, 1)) * feed.naturalHeight),
+  ];
+}
+
+function drawPoints() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  points.forEach((p, i) => {
+    const [cx, cy]   = feedToCanvas(p.x, p.y);
+    const isSelected = (dragging === i);
+
+    // Crosshair lines (drawn before the dot so the dot sits on top)
+    ctx.strokeStyle = isSelected ? 'rgba(26,92,150,0.45)' : 'rgba(224,92,16,0.35)';
+    ctx.lineWidth   = 0.8;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(cx, 0);           ctx.lineTo(cx, canvas.height);
+    ctx.moveTo(0,  cy);          ctx.lineTo(canvas.width, cy);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Dot
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+    ctx.shadowBlur  = 4;
+    ctx.beginPath();
+    ctx.arc(cx, cy, POINT_RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle   = isSelected ? '#1a5c96' : '#e05c10';
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth   = 1.5;
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // Index label
+    ctx.fillStyle    = '#fff';
+    ctx.font         = 'bold 9px Courier New';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(i + 1, cx, cy);
+  });
+}
+
+function hitTest(mx, my) {
+  for (let i = points.length - 1; i >= 0; i--) {
+    const [cx, cy] = feedToCanvas(points[i].x, points[i].y);
+    const dx = mx - cx;
+    const dy = my - cy;
+    if (Math.sqrt(dx * dx + dy * dy) <= POINT_RADIUS + 4) return i;
+  }
+  return -1;
+}
+
+canvas.addEventListener('mousedown', e => {
+  // canvas.getBoundingClientRect() is correct here because the canvas is
+  // already sized and positioned to overlay the feed exactly.
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  const hit = hitTest(mx, my);
+  if (hit >= 0) {
+    dragging = hit;
+    const [cx, cy] = feedToCanvas(points[hit].x, points[hit].y);
+    dragOffset = { x: mx - cx, y: my - cy };
+    canvas.style.cursor = 'grabbing';
+  } else {
+    // Only place a point if the feed is actually live
+    if (!feed.naturalWidth) return;
+    const [fx, fy] = canvasToFeed(mx, my);
+    points.push({ x: fx, y: fy, r: '' });
+    drawPoints();
+    renderTable();
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  if (dragging !== null) {
+    // Clamp drag so the point can't leave the feed area
+    const cx = Math.max(0, Math.min(mx - dragOffset.x, canvas.width));
+    const cy = Math.max(0, Math.min(my - dragOffset.y, canvas.height));
+    const [fx, fy] = canvasToFeed(cx, cy);
+    points[dragging].x = fx;
+    points[dragging].y = fy;
+    drawPoints();
+    renderTable();
+  } else {
+    canvas.style.cursor = hitTest(mx, my) >= 0 ? 'grab' : 'crosshair';
+  }
+});
+
+canvas.addEventListener('mouseup', () => {
+  dragging = null;
+  canvas.style.cursor = 'crosshair';
+});
+
+canvas.addEventListener('mouseleave', () => {
+  // If mouse leaves canvas while dragging, drop the point where it is
+  dragging = null;
+});
+
+// ─────────────────────────────────────────────
+//  VGCP TABLE
+// ─────────────────────────────────────────────
+const tbody   = document.getElementById('vgcp-tbody');
+const ptCount = document.getElementById('pt-count');
+
+function renderTable() {
+  ptCount.textContent = points.length + ' point(s)';
+  tbody.innerHTML = '';
+
+  if (points.length === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="5">No points placed yet. Click on the video to add.</td></tr>';
+    return;
+  }
+
+  points.forEach((p, i) => {
+    const tr = document.createElement('tr');
+
+    const tdIdx = document.createElement('td');
+    tdIdx.innerHTML = `<span class="pt-badge">${i + 1}</span>`;
+
+    const tdX = document.createElement('td');
+    const inX = document.createElement('input');
+    inX.type  = 'number';
+    inX.value = p.x;
+    inX.addEventListener('change', () => {
+      points[i].x = Math.max(0, Math.min(parseInt(inX.value) || 0, feed.naturalWidth));
+      inX.value = points[i].x;
+      drawPoints();
+    });
+    tdX.appendChild(inX);
+
+    const tdY = document.createElement('td');
+    const inY = document.createElement('input');
+    inY.type  = 'number';
+    inY.value = p.y;
+    inY.addEventListener('change', () => {
+      points[i].y = Math.max(0, Math.min(parseInt(inY.value) || 0, feed.naturalHeight));
+      inY.value = points[i].y;
+      drawPoints();
+    });
+    tdY.appendChild(inY);
+
+    const tdR = document.createElement('td');
+    const inR = document.createElement('input');
+    inR.type        = 'text';
+    inR.value       = p.r;
+    inR.placeholder = '—';
+    inR.addEventListener('input', () => { points[i].r = inR.value; });
+    tdR.appendChild(inR);
+
+    const tdDel = document.createElement('td');
+    const btnDel = document.createElement('button');
+    btnDel.className   = 'del-btn';
+    btnDel.textContent = '✕';
+    btnDel.title       = 'Remove point';
+    btnDel.addEventListener('click', () => {
+      points.splice(i, 1);
+      drawPoints();
+      renderTable();
+    });
+    tdDel.appendChild(btnDel);
+
+    tr.append(tdIdx, tdX, tdY, tdR, tdDel);
+    tbody.appendChild(tr);
+  });
+}
+
+document.getElementById('btn-clear-all').addEventListener('click', () => {
+  if (points.length === 0) return;
+  if (confirm('Clear all ground control points?')) {
+    points = [];
+    drawPoints();
+    renderTable();
+  }
+});
+
+// ─────────────────────────────────────────────
+//  POST HELPERS
+// ─────────────────────────────────────────────
+async function postJSON(path, body, feedbackEl) {
+  feedbackEl.className = 'post-feedback';
+  feedbackEl.textContent = 'Sending…';
+  try {
+    const res = await fetch(path, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    });
+    feedbackEl.className   = res.ok ? 'post-feedback ok' : 'post-feedback err';
+    feedbackEl.textContent = res.ok ? '✓ Posted successfully' : `✗ Server returned ${res.status}`;
+  } catch {
+    feedbackEl.className   = 'post-feedback err';
+    feedbackEl.textContent = '✗ Could not reach server';
+  }
+}
+
+document.getElementById('btn-post-vgcp').addEventListener('click', () => {
+  postJSON('/vgcp', { points: points.map(p => ({ x: p.x, y: p.y, r: p.r })) }, document.getElementById('fb-vgcp'));
+});
+
+document.getElementById('btn-post-cam').addEventListener('click', () => {
+  postJSON('/cam_settings', {
+    cam_height:      parseFloat(document.getElementById('cam-height').value)    || 0,
+    cam_orientation: [
+      parseFloat(document.getElementById('cam-azimuth').value)   || 0,
+      parseFloat(document.getElementById('cam-elevation').value) || 0,
+      parseFloat(document.getElementById('cam-roll').value)      || 0,
+    ],
+  }, document.getElementById('fb-cam'));
+});
+
+document.getElementById('btn-post-yolo').addEventListener('click', () => {
+  postJSON('/yolo_params', {
+    threshold:     parseFloat(document.getElementById('yolo-threshold').value) || 0,
+    is_tracerless: document.getElementById('yolo-tracerless').checked,
+  }, document.getElementById('fb-yolo'));
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Webcam Stream</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow:wght@300;400;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:     #0a0c0f;
+      --panel:  #0f1318;
+      --border: #1e2530;
+      --accent: #00e5ff;
+      --err:    #ff3d71;
+      --dim:    #3a4556;
+      --text:   #c8d6e5;
+      --mono:   'Share Tech Mono', monospace;
+      --sans:   'Barlow', sans-serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,.07) 2px,
+        rgba(0,0,0,.07) 4px
+      );
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2rem;
+      animation: fadeDown .5s ease both;
+    }
+
+    .logo {
+      font-family: var(--mono);
+      font-size: .65rem;
+      letter-spacing: .3em;
+      color: var(--accent);
+      text-transform: uppercase;
+      margin-bottom: .4rem;
+    }
+
+    h1 {
+      font-size: clamp(1.6rem, 4vw, 2.5rem);
+      font-weight: 600;
+      letter-spacing: -.02em;
+      color: #fff;
+    }
+
+    h1 span { color: var(--accent); }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      width: 100%;
+      max-width: 860px;
+      animation: fadeUp .6s .1s ease both;
+      box-shadow: 0 0 60px rgba(0,229,255,.04), 0 24px 64px rgba(0,0,0,.6);
+    }
+
+    /* ── top bar ── */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: .55rem 1rem;
+      border-bottom: 1px solid var(--border);
+      background: rgba(0,229,255,.02);
+    }
+
+    .dots { display: flex; gap: .4rem; }
+    .dot  { width: 10px; height: 10px; border-radius: 50%; }
+    .dot-r { background: #ff5f57; }
+    .dot-y { background: #febc2e; }
+    .dot-g { background: #28c840; }
+
+    .mono-label {
+      font-family: var(--mono);
+      font-size: .62rem;
+      letter-spacing: .14em;
+      color: var(--dim);
+    }
+
+    /* ── video area ── */
+    .video-wrap {
+      position: relative;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    #stream {
+      width: 100%;
+      height: auto;
+      object-fit: unset;
+    }
+
+    /* corner brackets */
+    .video-wrap::before,
+    .video-wrap::after {
+      content: '';
+      position: absolute;
+      width: 26px;
+      height: 26px;
+      border-color: var(--accent);
+      border-style: solid;
+      opacity: .4;
+      z-index: 2;
+      pointer-events: none;
+    }
+    .video-wrap::before { top: 12px;    left: 12px;  border-width: 2px 0 0 2px; }
+    .video-wrap::after  { bottom: 12px; right: 12px; border-width: 0 2px 2px 0; }
+
+    /* ── placeholder ── */
+    #placeholder {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1rem;
+      padding: 3rem;
+      text-align: center;
+    }
+
+    .cam-icon { width: 52px; height: 52px; opacity: .2; }
+
+    #status-text {
+      font-family: var(--mono);
+      font-size: .78rem;
+      color: var(--dim);
+      letter-spacing: .07em;
+    }
+
+    /* ── bottom bar ── */
+    .bottombar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: .7rem 1.1rem;
+      border-top: 1px solid var(--border);
+      flex-wrap: wrap;
+      gap: .7rem;
+    }
+
+    .status-row { display: flex; align-items: center; gap: .55rem; }
+
+    #indicator {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--dim);
+      flex-shrink: 0;
+      transition: background .3s, box-shadow .3s;
+    }
+    #indicator.live  { background: var(--accent); box-shadow: 0 0 7px var(--accent); animation: pulse 1.4s infinite; }
+    #indicator.error { background: var(--err);    box-shadow: 0 0 7px var(--err); }
+
+    #status-label {
+      font-family: var(--mono);
+      font-size: .68rem;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--dim);
+      transition: color .3s;
+    }
+    #indicator.live  ~ #status-label { color: var(--accent); }
+    #indicator.error ~ #status-label { color: var(--err); }
+
+    .controls { display: flex; gap: .55rem; }
+
+    button {
+      font-family: var(--mono);
+      font-size: .68rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      padding: .42rem .85rem;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color .18s, color .18s, background .18s;
+    }
+    button:hover { border-color: var(--accent); color: var(--accent); background: rgba(0,229,255,.06); }
+
+    button.primary {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(0,229,255,.08);
+    }
+    button.primary:hover { background: rgba(0,229,255,.16); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: .3; }
+    }
+    @keyframes fadeDown {
+      from { opacity: 0; transform: translateY(-10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(14px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="logo">&#9632; Live Feed</div>
+    <h1>Webcam <span>Stream</span></h1>
+  </header>
+
+  <div class="card">
+
+    <div class="topbar">
+      <div class="dots">
+        <div class="dot dot-r"></div>
+        <div class="dot dot-y"></div>
+        <div class="dot dot-g"></div>
+      </div>
+      <div class="mono-label">CAMERA_INDEX: 0 &nbsp;|&nbsp; MJPEG</div>
+      <div class="mono-label" id="resolution">—</div>
+    </div>
+
+    <div class="video-wrap">
+      <img id="stream" alt="webcam stream" />
+
+      <div id="placeholder">
+        <svg class="cam-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M15 10l4.553-2.276A1 1 0 0121 8.723v6.554a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/>
+        </svg>
+        <div id="status-text">Press Connect to start the stream.</div>
+      </div>
+    </div>
+
+    <div class="bottombar">
+      <div class="status-row">
+        <div id="indicator"></div>
+        <div id="status-label">Idle</div>
+      </div>
+
+      <div class="mono-label">/video_feed</div>
+
+      <div class="controls">
+        <button id="btn-stop"  style="display:none">Stop</button>
+        <button id="btn-start" class="primary">Connect</button>
+      </div>
+      <input id="debug-input" type="text" placeholder="debug message..." />
+      <button id="btn-debug">Send</button>
+    </div>
+
+  </div>
+
+  <script>
+    // Relative URL — works regardless of host/port because Flask serves this page.
+    const STREAM_URL = '/video_feed';
+
+    const streamImg   = document.getElementById('stream');
+    const placeholder = document.getElementById('placeholder');
+    const statusText  = document.getElementById('status-text');
+    const indicator   = document.getElementById('indicator');
+    const statusLabel = document.getElementById('status-label');
+    const resEl       = document.getElementById('resolution');
+    const btnStart    = document.getElementById('btn-start');
+    const btnStop     = document.getElementById('btn-stop');
+    const debugInput  = document.getElementById('debug-input');
+    const btnDebug    = document.getElementById('btn-debug');
+
+    let running = false;
+
+    function setLive() {
+      indicator.className = 'live';
+      placeholder.style.display = 'none';
+      streamImg.style.display   = 'block';
+      btnStart.style.display    = 'none';
+      btnStop.style.display     = 'inline-block';
+      if (streamImg.naturalWidth) {
+        resEl.textContent = `${streamImg.naturalWidth} × ${streamImg.naturalHeight}`;
+      }
+    }
+
+    function setError(msg) {
+      indicator.className = 'error';
+      statusText.textContent    = msg || 'Could not connect.';
+      placeholder.style.display = 'flex';
+      streamImg.style.display   = 'none';
+      btnStart.style.display    = 'inline-block';
+      btnStop.style.display     = 'none';
+      resEl.textContent = '—';
+      running = false;
+    }
+
+    function setIdle() {
+      indicator.className = '';
+      statusText.textContent    = 'Stream stopped.';
+      placeholder.style.display = 'flex';
+      streamImg.style.display   = 'none';
+      btnStart.style.display    = 'inline-block';
+      btnStop.style.display     = 'none';
+      resEl.textContent = '—';
+      running = false;
+    }
+
+    function startStream() {
+      if (running) return;
+      running = true;
+
+      indicator.className = '';
+      statusLabel.textContent = 'Connecting…';
+      statusText.textContent  = 'Connecting to /video_feed…';
+
+      streamImg.onload  = setLive;
+      streamImg.onerror = () => setError('Stream unavailable. Is the camera connected?');
+
+      // Cache-bust to force a fresh connection on reconnect
+      streamImg.src = STREAM_URL + '?t=' + Date.now();
+    }
+
+    function stopStream() {
+      streamImg.src = '';
+      setIdle();
+    }
+
+    async function sendDebug() {
+      const msg = debugInput.value.trim();
+      if (!msg) return;
+      await fetch('/print_debug', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg }),
+      });
+      debugInput.value = '';
+    }
+
+    btnStart.addEventListener('click', startStream);
+    btnStop.addEventListener('click',  stopStream);
+    btnDebug.addEventListener('click', sendDebug);
+    debugInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendDebug(); });
+  </script>
+
+</body>
+</html>

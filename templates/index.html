@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>MVRSV Prototype v1</title>
+        <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+        --bg:        #f0ece4;
+        --panel:     #faf8f4;
+        --border:    #c8c0b0;
+        --accent:    #1a5c96;
+        --accent-h:  #0f3f6e;
+        --danger:    #b03020;
+        --text:      #1a1a1a;
+        --muted:     #6a6258;
+        --point-clr: #e05c10;
+        --point-sel: #1a5c96;
+        --input-bg:  #fff;
+        --row-alt:   #f0ece4;
+        }
+
+        html, body { height: 100%; }
+
+        body {
+        font-family: 'Courier New', Courier, monospace;
+        background: var(--bg);
+        color: var(--text);
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        overflow: hidden;
+        }
+
+        /* ── HEADER ── */
+        header {
+        flex-shrink: 0;
+        text-align: center;
+        padding: .45rem 1rem;
+        background: var(--accent);
+        color: #fff;
+        border-bottom: 3px solid var(--accent-h);
+        }
+        header h2 { font-size: 1rem; letter-spacing: .08em; text-transform: uppercase; }
+        header p  { font-size: .7rem; color: rgba(255,255,255,.7); margin-top: .15rem; line-height: 1.5; }
+
+        /* ── MAIN ── */
+        .ui {
+        display: flex;
+        flex: 1;
+        overflow: hidden;
+        min-height: 0;
+        }
+
+        /* ── VIDEO SPACE ── */
+        .video_space {
+        width: 70%;
+        background: #111;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        }
+
+        /* Fills all space above the stream-bar. #feed-wrap is centered inside. */
+        #video-viewport {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        }
+
+        /* Sized by JS to contain-scaled feed dimensions, centered via transform. */
+        #feed-wrap {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        /* width + height set by JS */
+        }
+
+        /* Feed and canvas stack exactly on top of each other inside #feed-wrap. */
+        #feed,
+        #canvas {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+        }
+
+        #feed   { visibility: hidden; }
+        #canvas { cursor: crosshair; }
+
+        #video-placeholder {
+        position: absolute;
+        top: 50%; left: 50%;
+        transform: translate(-50%, -50%);
+        color: #444;
+        font-size: .8rem;
+        letter-spacing: .1em;
+        text-align: center;
+        pointer-events: none;
+        user-select: none;
+        }
+
+        /* Stream bar sits below the viewport, never overlaps the canvas. */
+        .stream-bar {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        gap: .6rem;
+        padding: .45rem .75rem;
+        background: #1a1a1a;
+        border-top: 1px solid #333;
+        }
+        .stream-bar button {
+        font-family: inherit;
+        font-size: .7rem;
+        padding: .3rem .75rem;
+        border: 1px solid rgba(255,255,255,.25);
+        background: rgba(255,255,255,.1);
+        color: #fff;
+        cursor: pointer;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+        }
+        .stream-bar button:hover  { background: rgba(255,255,255,.22); }
+        .stream-bar button.active { background: var(--accent); border-color: var(--accent); }
+
+        #stream-status {
+        font-size: .65rem;
+        color: rgba(255,255,255,.55);
+        letter-spacing: .07em;
+        margin-left: auto;
+        }
+        .timeline {
+        flex: 1;
+        display: none;
+        align-items: center;
+        gap: .45rem;
+        min-width: 180px;
+        }
+        .timeline.active { display: flex; }
+        .timeline input[type="range"] {
+        width: 100%;
+        accent-color: var(--accent);
+        cursor: pointer;
+        }
+        .timeline-time {
+        font-size: .65rem;
+        color: rgba(255,255,255,.72);
+        white-space: nowrap;
+        letter-spacing: .04em;
+        }
+        #stream-dot {
+        width: 7px; height: 7px;
+        border-radius: 50%;
+        background: #555;
+        flex-shrink: 0;
+        }
+        #stream-dot.live  { background: #4caf50; box-shadow: 0 0 6px #4caf50; animation: blink 1.4s infinite; }
+        #stream-dot.error { background: #e53935; }
+
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+        /* ── MENU SPACE ── */
+        .menu_space {
+        width: 30%;
+        background: var(--panel);
+        border-left: 2px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        }
+
+        .panel-select {
+        width: 100%;
+        font-family: inherit;
+        font-size: .75rem;
+        padding: .55rem .7rem;
+        border: none;
+        border-bottom: 2px solid var(--border);
+        background: var(--accent);
+        color: #fff;
+        cursor: pointer;
+        letter-spacing: .06em;
+        text-transform: uppercase;
+        appearance: none;
+        -webkit-appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='white'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right .75rem center;
+        flex-shrink: 0;
+        }
+
+        .panels { flex: 1; overflow-y: auto; }
+
+        .panel { display: none; padding: .85rem; }
+        .panel.active { display: block; }
+
+        .panel-title {
+        font-size: .7rem;
+        text-transform: uppercase;
+        letter-spacing: .12em;
+        color: var(--muted);
+        margin-bottom: .75rem;
+        padding-bottom: .35rem;
+        border-bottom: 1px solid var(--border);
+        }
+
+        .field { margin-bottom: .65rem; }
+        .field label {
+        display: block;
+        font-size: .68rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: .08em;
+        margin-bottom: .25rem;
+        }
+        .field input[type="text"],
+        .field input[type="number"],
+        .field input[type="file"],
+        .field select {
+        width: 100%;
+        font-family: inherit;
+        font-size: .8rem;
+        padding: .38rem .5rem;
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        color: var(--text);
+        }
+        .field input:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+        .field select:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+
+        .check-field {
+        display: flex;
+        align-items: center;
+        gap: .5rem;
+        margin-bottom: .65rem;
+        cursor: pointer;
+        }
+        .check-field input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-color: var(--accent); }
+        .check-field span { font-size: .78rem; }
+
+        .post-btn {
+        font-family: inherit;
+        font-size: .72rem;
+        letter-spacing: .1em;
+        text-transform: uppercase;
+        padding: .45rem 1rem;
+        background: var(--accent);
+        color: #fff;
+        border: none;
+        cursor: pointer;
+        margin-top: .5rem;
+        width: 100%;
+        }
+        .post-btn:hover { background: var(--accent-h); }
+
+        .post-feedback {
+        font-size: .65rem;
+        margin-top: .4rem;
+        letter-spacing: .05em;
+        min-height: 1em;
+        color: var(--muted);
+        }
+        .post-feedback.ok  { color: #2e7d32; }
+        .post-feedback.err { color: var(--danger); }
+
+        /* ── VGCP TABLE ── */
+        .vgcp-toolbar {
+        display: flex;
+        gap: .5rem;
+        margin-bottom: .65rem;
+        align-items: center;
+        }
+        .vgcp-toolbar span {
+        font-size: .65rem;
+        color: var(--muted);
+        margin-left: auto;
+        letter-spacing: .05em;
+        }
+        .vgcp-toolbar button {
+        font-family: inherit;
+        font-size: .68rem;
+        padding: .3rem .65rem;
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        cursor: pointer;
+        letter-spacing: .07em;
+        text-transform: uppercase;
+        }
+        .vgcp-toolbar button:hover       { border-color: var(--accent); color: var(--accent); }
+        .vgcp-toolbar button.danger:hover { border-color: var(--danger); color: var(--danger); }
+        .vgcp-toolbar button.active { border-color: var(--accent); background: var(--accent); color: #fff; }
+
+        .calibration-readout {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: .25rem;
+        padding: .55rem .65rem;
+        margin-bottom: .65rem;
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        font-size: .72rem;
+        }
+        .calibration-readout.ready { border-color: rgba(46,125,50,.65); }
+        .calibration-readout span {
+        color: var(--muted);
+        letter-spacing: .04em;
+        }
+        .calibration-readout .calibration-status {
+        color: var(--text);
+        font-size: .78rem;
+        }
+
+        .results-meta {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: .25rem;
+        padding: .55rem .65rem;
+        margin-bottom: .65rem;
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        font-size: .72rem;
+        color: var(--muted);
+        }
+        .results-meta strong {
+        color: var(--text);
+        font-size: .84rem;
+        font-weight: normal;
+        }
+        .result-cards {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: .5rem;
+        margin-bottom: .75rem;
+        }
+        .result-card {
+        border: 1px solid var(--border);
+        background: var(--input-bg);
+        padding: .55rem .65rem;
+        min-height: 68px;
+        }
+        .result-card span {
+        display: block;
+        color: var(--muted);
+        font-size: .62rem;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+        margin-bottom: .25rem;
+        }
+        .result-card strong {
+        display: block;
+        color: var(--text);
+        font-size: 1rem;
+        font-weight: normal;
+        }
+        .result-card small {
+        display: block;
+        color: var(--muted);
+        font-size: .65rem;
+        margin-top: .25rem;
+        }
+        .results-table-wrap {
+        overflow-x: auto;
+        margin-bottom: .65rem;
+        }
+
+        .vgcp-table-wrap { overflow-x: auto; margin-bottom: .65rem; }
+
+        table { width: 100%; border-collapse: collapse; font-size: .72rem; }
+        thead th {
+        background: var(--accent);
+        color: #fff;
+        padding: .3rem .4rem;
+        text-align: left;
+        font-weight: normal;
+        letter-spacing: .07em;
+        font-size: .65rem;
+        text-transform: uppercase;
+        }
+        tbody tr:nth-child(even) { background: var(--row-alt); }
+        tbody td { padding: .28rem .4rem; vertical-align: middle; }
+
+        tbody td input[type="number"],
+        tbody td input[type="text"] {
+        font-family: inherit;
+        font-size: .72rem;
+        width: 100%;
+        border: 1px solid transparent;
+        background: transparent;
+        padding: .1rem .2rem;
+        color: var(--text);
+        }
+        tbody td input:focus {
+        border-color: var(--accent);
+        background: var(--input-bg);
+        outline: none;
+        }
+
+        .del-btn {
+        font-family: inherit;
+        font-size: .65rem;
+        padding: .15rem .4rem;
+        border: 1px solid var(--border);
+        background: transparent;
+        cursor: pointer;
+        color: var(--danger);
+        letter-spacing: .05em;
+        }
+        .del-btn:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+        .empty-row td { color: var(--muted); font-style: italic; text-align: center; padding: .6rem; }
+
+        .pt-badge {
+        display: inline-block;
+        width: 18px; height: 18px;
+        border-radius: 50%;
+        background: var(--point-clr);
+        color: #fff;
+        font-size: .6rem;
+        text-align: center;
+        line-height: 18px;
+        }
+        </style>
+    </head>
+    <body>
+
+        <header>
+            <h2>MVRSV Prototype v1</h2>
+            <p>Made by: Immanuelle Fyan Langoyan &nbsp;|&nbsp; Prince Zulkifl Mangondato</p>
+        </header>
+
+        <div class="ui">
+
+            <!-- ── VIDEO SPACE ── -->
+            <div class="video_space">
+
+                <div id="video-viewport">
+                    <div id="video-placeholder">NO FEED</div>
+                    <!-- #feed-wrap is sized by JS to the contain-scaled feed rect -->
+                    <div id="feed-wrap">
+                        <img id="feed" alt="video feed" />
+                        <canvas id="canvas"></canvas>
+                    </div>
+                </div>
+
+                <div class="stream-bar">
+                    <div id="stream-dot"></div>
+                    <button id="btn-connect" class="active">Connect</button>
+                    <button id="btn-pause" style="display:none">Pause</button>
+                    <button id="btn-disconnect" style="display:none">Disconnect</button>
+                    <button id="btn-results">Results</button>
+                    <div class="timeline" id="timeline-wrap">
+                        <span class="timeline-time" id="timeline-current">00:00</span>
+                        <input type="range" id="timeline-slider" min="0" max="0" value="0" step="1" />
+                        <span class="timeline-time" id="timeline-duration">00:00</span>
+                    </div>
+                    <span id="stream-status">idle</span>
+                </div>
+
+            </div>
+
+            <!-- ── MENU SPACE ── -->
+            <div class="menu_space">
+
+                <select class="panel-select" id="panel-select">
+                    <option value="video">Video Source</option>
+                    <option value="vgcp">Virtual Ground Control Points</option>
+                    <option value="camera">Camera Settings</option>
+                    <option value="yolo">YOLO Settings</option>
+                    <option value="cv">Computer Vision</option>
+                    <option value="results">Results</option>
+                </select>
+
+                <div class="panels">
+
+                    <!-- Video -->
+                    <div class="panel active" id="panel-video">
+                        <div class="panel-title">Video Source</div>
+                        <div class="field">
+                            <label>Upload Video</label>
+                            <input type="file" id="video-file" accept="video/*,.avi,.mp4,.mov,.mkv,.webm" />
+                        </div>
+                        <button class="post-btn" id="btn-upload-video">Upload Video</button>
+                        <div class="field">
+                            <label>Camera Device</label>
+                            <select id="camera-select">
+                                <option value="">Scanning cameras...</option>
+                            </select>
+                        </div>
+                        <button class="post-btn" id="btn-use-camera">Use Camera</button>
+                        <button class="post-btn" id="btn-refresh-cameras">Refresh Cameras</button>
+                        <button class="post-btn" id="btn-reset-ortho">Reset to Raw Video</button>
+                        <div class="post-feedback" id="fb-video"></div>
+                    </div>
+
+                    <!-- VGCP -->
+                    <div class="panel" id="panel-vgcp">
+                        <div class="panel-title">Virtual Ground Control Points</div>
+                        <div class="vgcp-toolbar">
+                            <button id="btn-clear-all" class="danger">Clear All</button>
+                            <span id="pt-count">0 point(s)</span>
+                        </div>
+                        <div class="calibration-readout" id="calibration-readout">
+                            <span class="calibration-status" id="calibration-status">Not calibrated</span>
+                            <span id="calibration-mpp">m/px: --</span>
+                            <span id="calibration-ppm">px/m: --</span>
+                        </div>
+                        <div class="vgcp-table-wrap">
+                            <table>
+                                <thead>
+                                    <tr><th>#</th><th>X (px)</th><th>Y (px)</th><th>R (m)</th><th></th></tr>
+                                </thead>
+                                <tbody id="vgcp-tbody">
+                                    <tr class="empty-row"><td colspan="5">No points placed yet. Click on the video to add.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <button class="post-btn" id="btn-post-vgcp">POST to /vgcp</button>
+                        <div class="post-feedback" id="fb-vgcp"></div>
+                    </div>
+
+                    <!-- Camera -->
+                    <div class="panel" id="panel-camera">
+                        <div class="panel-title">Camera Settings</div>
+                        <div class="field">
+                            <label>Camera Horizontal Field of View (°)</label>
+                            <input type="number" id="cam-fov" placeholder="e.g. 72.4" step="any" />
+                        </div>
+                        <div class="field">
+                            <label>Raw Scale (m/px)</label>
+                            <input type="number" id="raw-meters-per-pixel" placeholder="0.02" min="0" step="any" />
+                        </div>
+                        <label class="check-field">
+                            <input type="checkbox" id="video-ortho" />
+                            <span>Show Orthorectified Feed</span>
+                        </label>
+                        <button class="post-btn" id="btn-post-cam">POST to /cam_settings</button>
+                        <div class="post-feedback" id="fb-cam"></div>
+                    </div>
+
+                    <!-- YOLO -->
+                    <div class="panel" id="panel-yolo">
+                        <div class="panel-title">YOLO Settings</div>
+                        <div class="field">
+                            <label>Morphology Confidence (0.0 - 1.0)</label>
+                            <input type="number" id="morphology-threshold" placeholder="e.g. 0.35" min="0" max="1" step="0.01" />
+                        </div>
+                        <div class="field">
+                            <label>Tracer Confidence (0.0 - 1.0)</label>
+                            <input type="number" id="yolo-threshold" placeholder="e.g. 0.5" min="0" max="1" step="0.01" />
+                        </div>
+                        <div class="field">
+                            <label>Tracer Target Class</label>
+                            <input type="text" id="tracer-target-kind" placeholder="all" />
+                        </div>
+                        <div class="field">
+                            <label>Orthorectified Output Size (px)</label>
+                            <input type="number" id="target-size" placeholder="640" min="32" step="32" />
+                        </div>
+                        <div class="field">
+                            <label>Morphology Image Size</label>
+                            <input type="number" id="morphology-size" placeholder="640" min="32" step="32" />
+                        </div>
+                        <div class="field">
+                            <label>Morphology Mask Erosion (px)</label>
+                            <input type="number" id="morphology-mask-erode" placeholder="0" min="0" step="1" />
+                        </div>
+                        <div class="field">
+                            <label>Tracer Image Size</label>
+                            <input type="number" id="tracer-size" placeholder="1024" min="32" step="32" />
+                        </div>
+                        <div class="field">
+                            <label>Stream Max Width (px)</label>
+                            <input type="number" id="stream-max-width" placeholder="e.g. 640" step="160" />
+                        </div>
+                        <div class="field">
+                            <label>Target Stream FPS</label>
+                            <input type="number" id="target-stream-fps" placeholder="e.g. 25" min="1" max="30" step="1" />
+                        </div>
+                        <div class="field">
+                            <label>Tracer Refresh Interval (frames)</label>
+                            <input type="number" id="detect-interval" placeholder="e.g. 3" min="1" step="1" />
+                        </div>
+                        <div class="field">
+                            <label>Morphology Refresh Interval (frames)</label>
+                            <input type="number" id="morphology-interval" placeholder="e.g. 36" min="1" step="1" />
+                        </div>
+                        <div class="field">
+                            <label>Minimum Tracked Points</label>
+                            <input type="number" id="min-tracked-points" placeholder="e.g. 2" min="1" step="1" />
+                        </div>
+                        <button class="post-btn" id="btn-post-yolo">POST to /yolo_params</button>
+                        <div class="post-feedback" id="fb-yolo"></div>
+                    </div>
+
+                    <!-- Computer Vision -->
+                    <div class="panel" id="panel-cv">
+                        <div class="panel-title">Computer Vision</div>
+                        <label class="check-field">
+                            <input type="checkbox" id="enable-piv" checked />
+                            <span>Use PIV Fallback</span>
+                        </label>
+                        <div class="field">
+                            <label>PIV Refresh Interval (frames)</label>
+                            <input type="number" id="piv-interval" placeholder="15" min="1" step="1" />
+                        </div>
+                        <div class="field">
+                            <label>PIV Working Max Size (px)</label>
+                            <input type="number" id="piv-max-size" placeholder="384" min="32" step="32" />
+                        </div>
+                        <label class="check-field">
+                            <input type="checkbox" id="cv-roi-enabled" />
+                            <span>Use Velocity ROI</span>
+                        </label>
+                        <div class="vgcp-toolbar">
+                            <button type="button" id="btn-draw-cv-roi">Draw Region</button>
+                            <button type="button" id="btn-clear-cv-roi" class="danger">Delete ROI</button>
+                            <span id="cv-roi-count">0 point(s)</span>
+                        </div>
+                        <label class="check-field">
+                            <input type="checkbox" id="enable-stiv" checked />
+                            <span>Use STIV Fallback</span>
+                        </label>
+                        <div class="field">
+                            <label>STIV History (frames)</label>
+                            <input type="number" id="stiv-history" placeholder="48" min="2" step="1" />
+                        </div>
+                        <div class="field">
+                            <label>STIV Start X (%)</label>
+                            <input type="number" id="stiv-start-x" placeholder="5" min="0" max="100" step="1" />
+                        </div>
+                        <div class="field">
+                            <label>STIV Start Y (%)</label>
+                            <input type="number" id="stiv-start-y" placeholder="50" min="0" max="100" step="1" />
+                        </div>
+                        <div class="field">
+                            <label>STIV End X (%)</label>
+                            <input type="number" id="stiv-end-x" placeholder="95" min="0" max="100" step="1" />
+                        </div>
+                        <div class="field">
+                            <label>STIV End Y (%)</label>
+                            <input type="number" id="stiv-end-y" placeholder="50" min="0" max="100" step="1" />
+                        </div>
+                        <button class="post-btn" id="btn-post-cv">POST Computer Vision Settings</button>
+                        <div class="post-feedback" id="fb-cv"></div>
+                    </div>
+
+                    <!-- Results -->
+                    <div class="panel" id="panel-results">
+                        <div class="panel-title">Results</div>
+                        <div class="results-meta">
+                            <strong id="results-headline">No results yet</strong>
+                            <span id="results-duration">Duration: --</span>
+                            <span id="results-frames">Frames: --</span>
+                            <span id="results-csv">CSV: --</span>
+                        </div>
+                        <div class="field">
+                            <label>Float Method Value:</label>
+                            <input type="number" id="results-float-method" placeholder="m/s" min="0" step="any" />
+                        </div>
+                        <div class="result-cards">
+                            <div class="result-card">
+                                <span>Surface</span>
+                                <strong id="result-surface-median">--</strong>
+                                <small id="result-surface-count">0 samples</small>
+                            </div>
+                            <div class="result-card">
+                                <span>Tracer</span>
+                                <strong id="result-tracer-median">--</strong>
+                                <small id="result-tracer-count">0 samples</small>
+                            </div>
+                            <div class="result-card">
+                                <span>Tracer Count</span>
+                                <strong id="result-tracer-count-median">--</strong>
+                                <small id="result-tracer-count-samples">0 samples</small>
+                            </div>
+                            <div class="result-card">
+                                <span>PIV</span>
+                                <strong id="result-piv-median">--</strong>
+                                <small id="result-piv-count">0 samples</small>
+                            </div>
+                            <div class="result-card">
+                                <span>STIV</span>
+                                <strong id="result-stiv-median">--</strong>
+                                <small id="result-stiv-count">0 samples</small>
+                            </div>
+                        </div>
+                        <div class="results-table-wrap">
+                            <table>
+                                <thead>
+                                    <tr><th>Method</th><th>Median</th><th>Mean</th><th>Latest</th><th>Error</th><th>% Error</th><th>Samples</th></tr>
+                                </thead>
+                                <tbody id="results-tbody">
+                                    <tr class="empty-row"><td colspan="7">No velocity samples yet.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <button class="post-btn" id="btn-stop-results">Stop Video and Show Results</button>
+                        <button class="post-btn" id="btn-refresh-results">Refresh Results</button>
+                        <button class="post-btn" id="btn-reset-results">Reset Results</button>
+                        <div class="post-feedback" id="fb-results"></div>
+                    </div>
+
+                </div>
+            </div>
+
+        </div>
+
+        <script src="{{ url_for('static', filename='script.js') }}"></script>
+    </body>
+</html>
