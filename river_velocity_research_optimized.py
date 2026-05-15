@@ -132,6 +132,8 @@ global_vars = {
     "piv_min_corr": 0.45,
     "piv_min_vectors": 4,
     "piv_max_displacement_px": 80,
+    "cv_roi_enabled": False,
+    "cv_roi_points": [],
 
     # STIV fallback - simplified line correlation
     "enable_stiv": True,
@@ -418,6 +420,40 @@ def get_bool(data, key, default=False):
     if isinstance(value, str):
         return value.lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def get_normalized_roi_points(points):
+    if not isinstance(points, list):
+        return []
+
+    parsed = []
+    for point in points:
+        if isinstance(point, dict):
+            raw_x = point.get("x")
+            raw_y = point.get("y")
+        elif isinstance(point, (list, tuple)) and len(point) >= 2:
+            raw_x, raw_y = point[0], point[1]
+        else:
+            continue
+
+        try:
+            x = float(raw_x)
+            y = float(raw_y)
+        except (TypeError, ValueError):
+            continue
+
+        if not np.isfinite(x) or not np.isfinite(y):
+            continue
+
+        parsed.append({
+            "x": max(0.0, min(1.0, x)),
+            "y": max(0.0, min(1.0, y)),
+        })
+
+        if len(parsed) >= 64:
+            break
+
+    return parsed if len(parsed) >= 3 else []
 
 
 def is_allowed_video(filename):
@@ -714,7 +750,7 @@ def draw_tracer_trails(frame, trails):
             cv2.line(frame, trail[i - 1], trail[i], (0, 200, 255), 2)
 
 
-def build_velocity_mask(shape, polygons, boxes):
+def build_morphology_mask(shape, polygons, boxes):
     mask = np.zeros(shape, dtype=np.uint8)
     for polygon in polygons:
         if len(polygon) >= 3:
@@ -722,8 +758,48 @@ def build_velocity_mask(shape, polygons, boxes):
     for x1, y1, x2, y2 in boxes:
         cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
     if np.count_nonzero(mask) < 16:
+        return None
+    return mask
+
+
+def build_velocity_mask(shape, polygons, boxes):
+    mask = build_morphology_mask(shape, polygons, boxes)
+    if mask is None:
+        mask = np.zeros(shape, dtype=np.uint8)
         mask.fill(255)
     return mask
+
+
+def build_cv_roi_mask(shape, enabled, points):
+    if not enabled or len(points) < 3:
+        return None, None
+
+    h, w = shape[:2]
+    polygon = np.array([
+        [
+            int(round(max(0.0, min(1.0, p["x"])) * (w - 1))),
+            int(round(max(0.0, min(1.0, p["y"])) * (h - 1))),
+        ]
+        for p in points
+    ], dtype=np.int32)
+
+    if len(polygon) < 3 or abs(cv2.contourArea(polygon)) < 16:
+        return None, None
+
+    mask = np.zeros(shape, dtype=np.uint8)
+    cv2.fillPoly(mask, [polygon], 255)
+    if np.count_nonzero(mask) < 16:
+        return None, None
+    return mask, polygon
+
+
+def draw_cv_roi_overlay(frame, polygon):
+    if polygon is None or len(polygon) < 3:
+        return
+    overlay = frame.copy()
+    cv2.fillPoly(overlay, [polygon], (255, 255, 0))
+    cv2.addWeighted(overlay, 0.14, frame, 0.86, 0, frame)
+    cv2.polylines(frame, [polygon], True, (255, 255, 0), 2)
 
 
 def point_in_mask(mask, x, y):
@@ -926,6 +1002,97 @@ def draw_piv_vectors(frame, flow, mask):
                 continue
             end = (int(x + dx * 2.5), int(y + dy * 2.5))
             cv2.arrowedLine(frame, (x, y), end, (255, 80, 255), 1, tipLength=0.35)
+
+
+class AsyncPivWorker:
+    def __init__(self, stream_token):
+        self.stream_token = stream_token
+        self.condition = threading.Condition()
+        self.pending_job = None
+        self.latest_result = None
+        self.stopped = False
+        self.thread = threading.Thread(target=self._run, name=f"piv-worker-{stream_token}", daemon=True)
+        self.thread.start()
+
+    def submit(self, prev_gray, gray, mask, frame_dt, frame_counter):
+        job = {
+            "prev_gray": prev_gray.copy(),
+            "gray": gray.copy(),
+            "mask": mask.copy(),
+            "frame_dt": float(frame_dt),
+            "frame_counter": int(frame_counter),
+            "shape": tuple(gray.shape[:2]),
+        }
+        with self.condition:
+            # Single-slot queue: keep only the newest pending PIV request.
+            self.pending_job = job
+            self.condition.notify()
+
+    def get_latest(self, shape=None):
+        with self.condition:
+            if self.latest_result is None:
+                return None
+            if shape is not None and self.latest_result.get("shape") != tuple(shape):
+                return None
+            return dict(self.latest_result)
+
+    def clear(self):
+        with self.condition:
+            self.pending_job = None
+            self.latest_result = None
+
+    def stop(self):
+        with self.condition:
+            self.stopped = True
+            self.pending_job = None
+            self.condition.notify()
+        self.thread.join(timeout=1.0)
+
+    def _run(self):
+        while True:
+            with self.condition:
+                while self.pending_job is None and not self.stopped:
+                    self.condition.wait()
+                if self.stopped:
+                    return
+                job = self.pending_job
+                self.pending_job = None
+
+            started_at = time.perf_counter()
+            try:
+                piv_velocity, piv_flow, piv_vector_count, piv_std = estimate_piv_velocity(
+                    job["prev_gray"],
+                    job["gray"],
+                    job["mask"],
+                    job["frame_dt"],
+                )
+                result = {
+                    "velocity": piv_velocity,
+                    "flow": piv_flow,
+                    "mask": job["mask"],
+                    "vector_count": int(piv_vector_count),
+                    "std": piv_std,
+                    "frame_counter": job["frame_counter"],
+                    "shape": job["shape"],
+                    "elapsed_ms": (time.perf_counter() - started_at) * 1000.0,
+                    "error": None,
+                }
+            except Exception as exc:
+                result = {
+                    "velocity": None,
+                    "flow": np.zeros((*job["shape"], 2), dtype=np.float32),
+                    "mask": job["mask"],
+                    "vector_count": 0,
+                    "std": None,
+                    "frame_counter": job["frame_counter"],
+                    "shape": job["shape"],
+                    "elapsed_ms": (time.perf_counter() - started_at) * 1000.0,
+                    "error": str(exc),
+                }
+
+            with self.condition:
+                self.latest_result = result
+
 
 # ============================================================
 # STIV FALLBACK
@@ -1233,6 +1400,7 @@ def generate_frames(stream_token):
     update_playback_info(**metadata)
 
     state = PipelineState(stiv_rows=deque(maxlen=int(global_vars["stiv_history"])))
+    piv_worker = AsyncPivWorker(stream_token)
     frame_counter = 0
     processing_fps = 0.0
     last_yield_time = time.perf_counter()
@@ -1254,6 +1422,7 @@ def generate_frames(stream_token):
             if seek_frame is not None and kind == "video":
                 cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(seek_frame)))
                 state.reset_tracking()
+                piv_worker.clear()
 
             if is_paused:
                 if state.last_payload is not None:
@@ -1331,7 +1500,15 @@ def generate_frames(stream_token):
                 state.morphology_polygons, state.morphology_boxes = extract_morphology_overlay(result, gray.shape)
 
             draw_morphology_overlay(display, state.morphology_polygons, state.morphology_boxes)
-            velocity_mask = build_velocity_mask(gray.shape, state.morphology_polygons, state.morphology_boxes)
+            morphology_mask = build_morphology_mask(gray.shape, state.morphology_polygons, state.morphology_boxes)
+            velocity_mask = morphology_mask if morphology_mask is not None else np.full(gray.shape, 255, dtype=np.uint8)
+            with lock:
+                roi_enabled = bool(global_vars["cv_roi_enabled"])
+                roi_points = [dict(p) for p in global_vars["cv_roi_points"]]
+            piv_roi_mask, piv_roi_polygon = build_cv_roi_mask(gray.shape, roi_enabled, roi_points)
+            if piv_roi_mask is not None:
+                draw_cv_roi_overlay(display, piv_roi_polygon)
+            piv_mask = piv_roi_mask if piv_roi_mask is not None else morphology_mask
 
             # Tracer optical flow is restricted to the morphology mask when available.
             tracer_velocity = None
@@ -1390,21 +1567,29 @@ def generate_frames(stream_token):
 
             draw_tracer_trails(display, state.tracer_trails)
 
-            # PIV is restricted to the morphology mask when available.
-            piv_velocity = None
+            # PIV runs in a bounded background worker. User ROI is preferred;
+            # morphology/river mask is the fallback when no ROI is set.
+            piv_result = piv_worker.get_latest(gray.shape[:2])
             piv_vector_count = 0
             piv_std = None
+            if piv_result is not None:
+                piv_velocity = piv_result["velocity"]
+                piv_vector_count = int(piv_result["vector_count"])
+                piv_std = piv_result["std"]
+                profile_times["piv_worker_last_ms"] = round(float(piv_result.get("elapsed_ms") or 0.0), 3)
+                if piv_velocity is not None:
+                    state.latest_piv_velocity = piv_velocity
+                if piv_result.get("flow") is not None and piv_result.get("mask") is not None:
+                    draw_piv_vectors(display, piv_result["flow"], piv_result.get("mask", piv_mask))
             if (
                 global_vars["enable_piv"]
+                and piv_mask is not None
                 and state.prev_gray is not None
                 and frame_counter % max(1, int(global_vars["piv_interval"])) == 0
             ):
                 t = time.perf_counter()
-                piv_velocity, piv_flow, piv_vector_count, piv_std = estimate_piv_velocity(state.prev_gray, gray, velocity_mask, frame_dt)
-                record_stage(profile_times, "piv_ms", t)
-                if piv_velocity is not None:
-                    state.latest_piv_velocity = piv_velocity
-                    draw_piv_vectors(display, piv_flow, velocity_mask)
+                piv_worker.submit(state.prev_gray, gray, piv_mask, frame_dt, frame_counter)
+                record_stage(profile_times, "piv_submit_ms", t)
 
             # STIV is restricted to the morphology mask when available.
             stiv_velocity = None
@@ -1536,6 +1721,7 @@ def generate_frames(stream_token):
 
             frame_counter += 1
     finally:
+        piv_worker.stop()
         cap.release()
 
 # ============================================================
@@ -1683,6 +1869,8 @@ def upload_video():
         global_vars["H"] = None
         global_vars["ortho_status"] = "VGCP calibration optional; using raw scale"
         global_vars["is_paused"] = False
+        global_vars["cv_roi_enabled"] = False
+        global_vars["cv_roi_points"] = []
         global_vgcps.clear()
         playback_info.update(metadata)
         payload = calibration_status_payload()
@@ -1740,6 +1928,8 @@ def set_camera_source():
         global_vars["H"] = None
         global_vars["is_ortho"] = False
         global_vars["ortho_status"] = "Camera source selected; using raw scale"
+        global_vars["cv_roi_enabled"] = False
+        global_vars["cv_roi_points"] = []
         global_vgcps.clear()
         playback_info.update(metadata)
         payload = calibration_status_payload()
@@ -1783,6 +1973,8 @@ def reset_orthorectification():
         global_vars["H"] = None
         global_vars["ortho_status"] = "VGCP calibration optional; using raw scale"
         global_vars["is_ortho"] = False
+        global_vars["cv_roi_enabled"] = False
+        global_vars["cv_roi_points"] = []
         global_vgcps.clear()
         payload = calibration_status_payload()
     cull_streams(reset_models=False)
@@ -1824,7 +2016,7 @@ def yolo_params():
         ("piv_min_vectors", 1, None), ("piv_max_displacement_px", 1, None),
         ("stiv_history", 2, None),
     ]
-    bools = ["enable_piv", "enable_stiv"]
+    bools = ["enable_piv", "enable_stiv", "cv_roi_enabled"]
     reset_models = False
     with lock:
         for key, lo, hi in numeric_float:
@@ -1840,6 +2032,9 @@ def yolo_params():
         if "tracer_target_kind" in data:
             target_kind = str(data.get("tracer_target_kind", "all") or "all").strip()
             global_vars["tracer_target_kind"] = target_kind if target_kind else "all"
+
+        if "cv_roi_points" in data:
+            global_vars["cv_roi_points"] = get_normalized_roi_points(data.get("cv_roi_points", []))
 
         if "morphology_model_path" in data:
             next_path = validate_model_path(data.get("morphology_model_path"), selected_morphology_model_path)

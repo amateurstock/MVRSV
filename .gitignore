@@ -7,3 +7,5 @@ test/
 time_stomp.txt
 validation_logs/
 venv/
+__pycache__/
+uploads/

@@ -315,6 +315,18 @@
         color: var(--text);
         font-size: .78rem;
         }
+        .calibration-note {
+        display: none;
+        padding: .5rem .65rem;
+        margin-bottom: .65rem;
+        border: 1px solid rgba(26,92,150,.35);
+        background: rgba(26,92,150,.08);
+        color: var(--muted);
+        font-size: .68rem;
+        line-height: 1.45;
+        letter-spacing: .03em;
+        }
+        .calibration-note.active { display: block; }
 
         .results-meta {
         display: grid;
@@ -510,6 +522,9 @@
                             <span id="calibration-mpp">m/px: --</span>
                             <span id="calibration-ppm">px/m: --</span>
                         </div>
+                        <div class="calibration-note" id="vgcp-ortho-note">
+                            VGCP markers are hidden while orthorectification is active. They are raw-frame calibration inputs, so drawing them over the orthorectified feed would no longer represent their original image positions.
+                        </div>
                         <div class="vgcp-table-wrap">
                             <table>
                                 <thead>
@@ -624,6 +639,15 @@
                         <div class="field">
                             <label>PIV Working Max Size (px)</label>
                             <input type="number" id="piv-max-size" placeholder="384" min="32" step="32" />
+                        </div>
+                        <label class="check-field">
+                            <input type="checkbox" id="cv-roi-enabled" />
+                            <span>Limit PIV to Drawn ROI</span>
+                        </label>
+                        <div class="vgcp-toolbar">
+                            <button type="button" id="btn-draw-cv-roi">Draw PIV ROI</button>
+                            <button type="button" id="btn-clear-cv-roi" class="danger">Delete ROI</button>
+                            <span id="cv-roi-count">0 point(s)</span>
                         </div>
                         <label class="check-field">
                             <input type="checkbox" id="enable-stiv" checked />
