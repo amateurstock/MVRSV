@@ -552,6 +552,47 @@ def calc_f_p(w_fov, w_px):
     return w_px / (2 * mt.tan(mt.radians(w_fov / 2)))
 
 
+def project_vgcps_to_plane(vgcps, focal_px, img_w, img_h):
+    """
+    Convert rangefinder VGCPs into metric 2D coordinates on their best-fit plane.
+
+    Each VGCP supplies an image point plus a line-of-sight range from the camera.
+    With a rectilinear pinhole camera model, the image point defines a 3D ray.
+    The range scales that ray into a camera-space 3D point. Since the control
+    points are expected to be coplanar, fit a plane and express each 3D point in
+    a 2D orthonormal basis on that plane.
+    """
+    cx, cy = img_w / 2, img_h / 2
+    points_3d = []
+
+    for p in vgcps:
+        ray = np.array([p.x - cx, p.y - cy, focal_px], dtype=np.float64)
+        norm = np.linalg.norm(ray)
+        if norm <= 1e-12:
+            return None, "VGCP ray solve failed"
+        points_3d.append((float(p.r) / norm) * ray)
+
+    points_3d = np.asarray(points_3d, dtype=np.float64)
+    centroid = np.mean(points_3d, axis=0)
+    centered = points_3d - centroid
+
+    if np.linalg.matrix_rank(centered) < 2:
+        return None, "VGCP 3D points are degenerate"
+
+    _, singular_values, vh = np.linalg.svd(centered, full_matrices=False)
+    if singular_values[1] <= 1e-9:
+        return None, "VGCP plane fit is degenerate"
+
+    basis_x = vh[0]
+    basis_y = vh[1]
+    plane_pts = np.column_stack((centered @ basis_x, centered @ basis_y))
+
+    if np.linalg.matrix_rank(plane_pts - plane_pts.mean(axis=0)) < 2:
+        return None, "VGCP plane coordinates are degenerate"
+
+    return plane_pts.astype(np.float32), "Ready"
+
+
 def calc_homo(vgcps, focal_px, img_w, img_h):
     if len(vgcps) < 4:
         return None, "Need at least 4 VGCPs"
@@ -559,27 +600,16 @@ def calc_homo(vgcps, focal_px, img_w, img_h):
         return None, "Each VGCP needs a positive R distance"
 
     image_pts = []
-    world_pts = []
-    cx, cy = img_w / 2, img_h / 2
-
     for p in vgcps:
         image_pts.append([p.x, p.y])
-        rel_x_px = p.x - cx
-        rel_y_px = p.y - cy
-        theta_a = np.arctan2(rel_x_px, focal_px)
-        theta_e = np.arctan2(rel_y_px, focal_px)
-        r = np.float64(p.r)
-        world_x = r * np.cos(theta_e) * np.sin(theta_a)
-        world_y = r * np.cos(theta_e) * np.cos(theta_a)
-        world_pts.append([world_x, world_y])
 
     src = np.array(image_pts, dtype=np.float32)
-    dst = np.array(world_pts, dtype=np.float32)
+    dst, status = project_vgcps_to_plane(vgcps, focal_px, img_w, img_h)
+    if dst is None:
+        return None, status
 
     if np.linalg.matrix_rank(src - src.mean(axis=0)) < 2:
         return None, "VGCP image points are degenerate"
-    if np.linalg.matrix_rank(dst - dst.mean(axis=0)) < 2:
-        return None, "VGCP real-world points are degenerate"
 
     dst = (dst - np.min(dst, axis=0)) * global_vars["px_scale"] + 100
     H, _ = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
