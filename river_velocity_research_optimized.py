@@ -126,6 +126,7 @@ global_vars = {
     # PIV settings - tuned for stability more than raw FPS
     "enable_piv": True,
     "piv_interval": 5,
+    "piv_max_size": 384,
     "piv_grid_step": 40,
     "piv_window_size": 64,
     "piv_search_size": 112,
@@ -356,6 +357,7 @@ class PipelineState:
     latest_stiv_velocity: float | None = None
     latest_tracer_velocity: float | None = None
     latest_tracer_count: int = 0
+    total_trash_tracers: int = 0
     last_payload: bytes | None = None
     last_frame_shape: tuple[int, int] | None = None
     last_tracer_detection_frame: int = -1_000_000
@@ -372,6 +374,7 @@ class PipelineState:
         self.prev_capture_time = None
         self.latest_tracer_velocity = None
         self.latest_tracer_count = 0
+        self.total_trash_tracers = 0
 
     def reset_for_shape(self, shape):
         if shape == self.last_frame_shape:
@@ -735,6 +738,40 @@ def filter_tracer_detections(detections):
     ]
 
 
+def count_new_trash_tracers(detections, tracked_points, max_match_distance_px=35.0):
+    if not detections:
+        return 0
+    if tracked_points is None or len(tracked_points) == 0:
+        return len(detections)
+
+    existing_points = np.asarray(tracked_points, dtype=np.float32).reshape(-1, 2)
+    if existing_points.size == 0:
+        return len(detections)
+
+    max_distance_sq = float(max_match_distance_px) ** 2
+    matched_indexes = set()
+    new_count = 0
+
+    for detection in detections:
+        point = np.asarray(detection["point"], dtype=np.float32)
+        distances = np.sum((existing_points - point) ** 2, axis=1)
+        matched = False
+
+        for idx in np.argsort(distances):
+            if int(idx) in matched_indexes:
+                continue
+            if float(distances[idx]) > max_distance_sq:
+                break
+            matched_indexes.add(int(idx))
+            matched = True
+            break
+
+        if not matched:
+            new_count += 1
+
+    return new_count
+
+
 def draw_tracer_points(frame, detections):
     for det in detections:
         cx, cy = det["point"]
@@ -863,7 +900,7 @@ def match_piv_window(src, dst, x, y, half_w, half_s, window, search, min_corr):
     return float(match_x - x), float(match_y - y), float(corr)
 
 
-def robust_piv_velocity(vectors, frame_dt):
+def robust_piv_velocity(vectors, frame_dt, meters_per_pixel=None):
     if not vectors:
         return None, 0, None
 
@@ -882,7 +919,8 @@ def robust_piv_velocity(vectors, frame_dt):
     if arr.size == 0:
         return None, 0, None
 
-    speeds = np.hypot(arr[:, 2], arr[:, 3]) * float(global_vars["meters_per_pixel"]) / max(frame_dt, 1e-6)
+    mpp = float(global_vars["meters_per_pixel"] if meters_per_pixel is None else meters_per_pixel)
+    speeds = np.hypot(arr[:, 2], arr[:, 3]) * mpp / max(frame_dt, 1e-6)
     speeds = speeds[np.isfinite(speeds)]
     speeds = speeds[(speeds >= float(global_vars["min_velocity"])) & (speeds <= float(global_vars["max_velocity"]))]
     if speeds.size == 0:
@@ -891,7 +929,7 @@ def robust_piv_velocity(vectors, frame_dt):
     return float(np.median(speeds)), int(speeds.size), float(np.std(speeds))
 
 
-def estimate_piv_velocity(prev_gray, gray, mask, frame_dt):
+def estimate_piv_velocity(prev_gray, gray, mask, frame_dt, meters_per_pixel=None, piv_param_scale=1.0):
     """
     Practical interrogation-window PIV using normalized cross-correlation.
 
@@ -909,12 +947,13 @@ def estimate_piv_velocity(prev_gray, gray, mask, frame_dt):
     curr = contrast_enhance(gray)
 
     h, w = gray.shape[:2]
-    window = int(global_vars["piv_window_size"])
-    search = int(global_vars["piv_search_size"])
-    step = int(global_vars["piv_grid_step"])
+    param_scale = max(float(piv_param_scale), 1e-6)
+    window = int(round(float(global_vars["piv_window_size"]) * param_scale))
+    search = int(round(float(global_vars["piv_search_size"]) * param_scale))
+    step = int(round(float(global_vars["piv_grid_step"]) * param_scale))
     min_corr = float(global_vars["piv_min_corr"])
-    max_disp = float(global_vars["piv_max_displacement_px"])
-    mpp = float(global_vars["meters_per_pixel"])
+    max_disp = float(global_vars["piv_max_displacement_px"]) * param_scale
+    mpp = float(global_vars["meters_per_pixel"] if meters_per_pixel is None else meters_per_pixel)
 
     window = max(16, window)
     if window % 2:
@@ -982,7 +1021,7 @@ def estimate_piv_velocity(prev_gray, gray, mask, frame_dt):
     if len(vectors) < int(global_vars["piv_min_vectors"]):
         return None, display_flow, len(vectors), None
 
-    piv_velocity, kept_count, piv_std = robust_piv_velocity(vectors, frame_dt)
+    piv_velocity, kept_count, piv_std = robust_piv_velocity(vectors, frame_dt, mpp)
     if piv_velocity is None:
         return None, display_flow, len(vectors), None
 
@@ -990,18 +1029,86 @@ def estimate_piv_velocity(prev_gray, gray, mask, frame_dt):
 
 
 def draw_piv_vectors(frame, flow, mask):
-    step = max(12, int(global_vars["piv_grid_step"]))
-    h, w = mask.shape
-    for y in range(step // 2, h, step):
-        for x in range(step // 2, w, step):
-            if mask[y, x] == 0:
-                continue
-            dx, dy = flow[y, x]
-            mag = mt.hypot(float(dx), float(dy))
-            if mag < 0.25:
-                continue
-            end = (int(x + dx * 2.5), int(y + dy * 2.5))
-            cv2.arrowedLine(frame, (x, y), end, (255, 80, 255), 1, tipLength=0.35)
+    h, w = frame.shape[:2]
+    flow_h, flow_w = flow.shape[:2]
+    mask_h, mask_w = mask.shape[:2]
+    mag = np.hypot(flow[:, :, 0], flow[:, :, 1])
+    ys, xs = np.nonzero(mag >= 0.25)
+
+    for y, x in zip(ys, xs):
+        if y >= h or x >= w or y >= mask_h or x >= mask_w or y >= flow_h or x >= flow_w:
+            continue
+        if mask[y, x] == 0:
+            continue
+        dx, dy = flow[y, x]
+        end = (int(round(x + float(dx) * 2.5)), int(round(y + float(dy) * 2.5)))
+        cv2.arrowedLine(frame, (int(x), int(y)), end, (255, 80, 255), 1, tipLength=0.35)
+
+
+def prepare_piv_inputs(prev_gray, gray, mask):
+    max_size = int(global_vars.get("piv_max_size", 0) or 0)
+    h, w = gray.shape[:2]
+    longest = max(h, w)
+
+    if max_size < 32 or longest <= max_size:
+        return prev_gray, gray, mask, 1.0
+
+    scale = max_size / float(longest)
+    new_w = max(16, int(round(w * scale)))
+    new_h = max(16, int(round(h * scale)))
+    size = (new_w, new_h)
+
+    return (
+        cv2.resize(prev_gray, size, interpolation=cv2.INTER_AREA),
+        cv2.resize(gray, size, interpolation=cv2.INTER_AREA),
+        cv2.resize(mask, size, interpolation=cv2.INTER_NEAREST),
+        scale,
+    )
+
+
+def restore_piv_flow(flow, original_shape, scale):
+    if scale >= 0.999:
+        return flow
+
+    out = np.zeros((*original_shape, 2), dtype=np.float32)
+    mag = np.hypot(flow[:, :, 0], flow[:, :, 1])
+    ys, xs = np.nonzero(mag >= 0.25)
+    h, w = original_shape
+
+    for y, x in zip(ys, xs):
+        original_x = int(round(float(x) / scale))
+        original_y = int(round(float(y) / scale))
+        if 0 <= original_x < w and 0 <= original_y < h:
+            out[original_y, original_x, 0] = float(flow[y, x, 0]) / scale
+            out[original_y, original_x, 1] = float(flow[y, x, 1]) / scale
+
+    return out
+
+
+def estimate_piv_with_optional_resize(prev_gray, gray, mask, frame_dt):
+    work_prev, work_gray, work_mask, piv_scale = prepare_piv_inputs(prev_gray, gray, mask)
+    work_mpp = float(global_vars["meters_per_pixel"]) / max(piv_scale, 1e-6)
+    piv_velocity, piv_flow, piv_vector_count, piv_std = estimate_piv_velocity(
+        work_prev,
+        work_gray,
+        work_mask,
+        frame_dt,
+        work_mpp,
+        piv_scale,
+    )
+
+    if piv_velocity is None and piv_scale < 0.999:
+        piv_velocity, piv_flow, piv_vector_count, piv_std = estimate_piv_velocity(
+            prev_gray,
+            gray,
+            mask,
+            frame_dt,
+            float(global_vars["meters_per_pixel"]),
+            1.0,
+        )
+        piv_scale = 1.0
+
+    return piv_velocity, piv_flow, piv_vector_count, piv_std, piv_scale
 
 
 class AsyncPivWorker:
@@ -1014,11 +1121,12 @@ class AsyncPivWorker:
         self.thread = threading.Thread(target=self._run, name=f"piv-worker-{stream_token}", daemon=True)
         self.thread.start()
 
-    def submit(self, prev_gray, gray, mask, frame_dt, frame_counter):
+    def submit(self, prev_gray, gray, mask, frame_dt, frame_counter, fallback_mask=None):
         job = {
             "prev_gray": prev_gray.copy(),
             "gray": gray.copy(),
             "mask": mask.copy(),
+            "fallback_mask": None if fallback_mask is None else fallback_mask.copy(),
             "frame_dt": float(frame_dt),
             "frame_counter": int(frame_counter),
             "shape": tuple(gray.shape[:2]),
@@ -1060,16 +1168,33 @@ class AsyncPivWorker:
 
             started_at = time.perf_counter()
             try:
-                piv_velocity, piv_flow, piv_vector_count, piv_std = estimate_piv_velocity(
+                piv_velocity, piv_flow, piv_vector_count, piv_std, piv_scale = estimate_piv_with_optional_resize(
                     job["prev_gray"],
                     job["gray"],
                     job["mask"],
                     job["frame_dt"],
                 )
+                result_mask = job["mask"]
+
+                if piv_velocity is None and job.get("fallback_mask") is not None:
+                    fallback_velocity, fallback_flow, fallback_vector_count, fallback_std, fallback_scale = estimate_piv_with_optional_resize(
+                        job["prev_gray"],
+                        job["gray"],
+                        job["fallback_mask"],
+                        job["frame_dt"],
+                    )
+                    if fallback_velocity is not None:
+                        piv_velocity = fallback_velocity
+                        piv_flow = fallback_flow
+                        piv_vector_count = fallback_vector_count
+                        piv_std = fallback_std
+                        piv_scale = fallback_scale
+                        result_mask = job["fallback_mask"]
+
                 result = {
                     "velocity": piv_velocity,
-                    "flow": piv_flow,
-                    "mask": job["mask"],
+                    "flow": restore_piv_flow(piv_flow, job["shape"], piv_scale),
+                    "mask": result_mask,
                     "vector_count": int(piv_vector_count),
                     "std": piv_std,
                     "frame_counter": job["frame_counter"],
@@ -1199,11 +1324,11 @@ def fmt_v(v):
 
 
 def draw_hud(frame, surface_velocity, source, tracer_velocity, piv_velocity, stiv_velocity,
-             tracer_count, tracked_points, piv_vectors, source_fps, processing_fps, frame_dt, device_label):
+             tracer_count, total_trash_tracers, piv_vectors, source_fps, processing_fps, frame_dt, device_label):
     lines = [
         f"Surface: {fmt_v(surface_velocity)} ({source})",
         f"Tracer: {fmt_v(tracer_velocity)} | PIV: {fmt_v(piv_velocity)} | STIV: {fmt_v(stiv_velocity)}",
-        f"Tracers: {tracer_count} | Tracked pts: {tracked_points} | PIV vectors: {piv_vectors}",
+        f"Trash now: {tracer_count} | Total trash tracer: {total_trash_tracers} | PIV vectors: {piv_vectors}",
         f"Source FPS: {source_fps:.2f} | Processing FPS: {processing_fps:.2f} | dt: {frame_dt:.4f}s",
         f"m/px: {global_vars['meters_per_pixel']:.5f} | YOLO: {device_label}",
     ]
@@ -1371,7 +1496,7 @@ def summarize_results(reference_value=None):
             "stiv": summarize_numeric_series(rows, "stiv_velocity_mps", reference_value),
             "processing_fps": summarize_numeric_series(rows, "processing_fps"),
             "tracer_count": summarize_numeric_series(rows, "tracer_count"),
-            "tracked_points": summarize_numeric_series(rows, "tracked_points"),
+            "total_trash_tracers": summarize_numeric_series(rows, "total_trash_tracers"),
             "piv_vectors": summarize_numeric_series(rows, "piv_vectors"),
             "meters_per_pixel": summarize_numeric_series(rows, "meters_per_pixel"),
         },
@@ -1508,7 +1633,10 @@ def generate_frames(stream_token):
             piv_roi_mask, piv_roi_polygon = build_cv_roi_mask(gray.shape, roi_enabled, roi_points)
             if piv_roi_mask is not None:
                 draw_cv_roi_overlay(display, piv_roi_polygon)
-            piv_mask = piv_roi_mask if piv_roi_mask is not None else morphology_mask
+            piv_mask = piv_roi_mask if piv_roi_mask is not None else (morphology_mask if morphology_mask is not None else np.full(gray.shape, 255, dtype=np.uint8))
+            piv_fallback_mask = None
+            if piv_roi_mask is None and morphology_mask is not None and not use_ortho:
+                piv_fallback_mask = np.full(gray.shape, 255, dtype=np.uint8)
 
             # Tracer optical flow is restricted to the morphology mask when available.
             tracer_velocity = None
@@ -1588,7 +1716,7 @@ def generate_frames(stream_token):
                 and frame_counter % max(1, int(global_vars["piv_interval"])) == 0
             ):
                 t = time.perf_counter()
-                piv_worker.submit(state.prev_gray, gray, piv_mask, frame_dt, frame_counter)
+                piv_worker.submit(state.prev_gray, gray, piv_mask, frame_dt, frame_counter, piv_fallback_mask)
                 record_stage(profile_times, "piv_submit_ms", t)
 
             # STIV is restricted to the morphology mask when available.
@@ -1624,6 +1752,7 @@ def generate_frames(stream_token):
                     for detection in detections
                     if point_in_mask(velocity_mask, detection["point"][0], detection["point"][1])
                 ]
+                state.total_trash_tracers += count_new_trash_tracers(detections, state.track_pts)
                 state.latest_tracer_count = len(detections)
                 draw_tracer_points(display, detections)
                 if detections:
@@ -1681,7 +1810,7 @@ def generate_frames(stream_token):
                 state.latest_piv_velocity,
                 state.latest_stiv_velocity,
                 state.latest_tracer_count,
-                tracked_points,
+                state.total_trash_tracers,
                 piv_vector_count,
                 source_fps,
                 processing_fps,
@@ -1704,7 +1833,7 @@ def generate_frames(stream_token):
                 "velocity_source": velocity_source,
                 "tracer_velocity_mps": "" if tracer_velocity is None else round(float(tracer_velocity), 6),
                 "tracer_count": int(state.latest_tracer_count),
-                "tracked_points": int(tracked_points),
+                "total_trash_tracers": int(state.total_trash_tracers),
                 "piv_velocity_mps": "" if state.latest_piv_velocity is None else round(float(state.latest_piv_velocity), 6),
                 "piv_vectors": int(piv_vector_count),
                 "piv_std": "" if piv_std is None else round(float(piv_std), 6),
@@ -2011,7 +2140,7 @@ def yolo_params():
         ("morphology_interval", 1, None), ("detect_interval", 1, None),
         ("morphology_mask_erode", 0, None), ("min_tracked_points", 1, None),
         ("tracer_trail_length", 1, None), ("velocity_smoothing_window", 1, None),
-        ("piv_interval", 1, None), ("piv_grid_step", 12, None),
+        ("piv_interval", 1, None), ("piv_max_size", 32, None), ("piv_grid_step", 12, None),
         ("piv_window_size", 16, None), ("piv_search_size", 24, None),
         ("piv_min_vectors", 1, None), ("piv_max_displacement_px", 1, None),
         ("stiv_history", 2, None),

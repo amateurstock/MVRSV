@@ -850,9 +850,9 @@ function updateResultCard(key, metric) {
 }
 
 function updateTracerCountCard(metric) {
-    const median = Number(metric.median);
-    document.getElementById('result-tracer-count-median').textContent = Number.isFinite(median)
-        ? String(Math.round(median))
+    const latest = Number(metric.latest);
+    document.getElementById('result-tracer-count-median').textContent = Number.isFinite(latest)
+        ? String(Math.round(latest))
         : '--';
     document.getElementById('result-tracer-count-samples').textContent = `${Number(metric.count) || 0} samples`;
 }
@@ -889,7 +889,7 @@ function updateResultsDisplay(data) {
     const metrics = {
         surface: resultMetric(data, 'surface'),
         tracer: resultMetric(data, 'tracer'),
-        tracerCount: resultMetric(data, 'tracer_count'),
+        tracerCount: resultMetric(data, 'total_trash_tracers'),
         piv: resultMetric(data, 'piv'),
         stiv: resultMetric(data, 'stiv'),
     };
