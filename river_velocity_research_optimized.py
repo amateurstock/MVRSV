@@ -41,7 +41,7 @@ from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
-VIDEO_SRC = "./test/AlpineStabilised.avi"
+VIDEO_SRC = ""
 MORPHOLOGY_MODEL_PATH = "models/morphology_model.pt"
 TRACER_MODEL_PATH = "models/tracer_model.pt"
 MODEL_FOLDER = Path("./models")
@@ -1859,7 +1859,6 @@ def generate_frames(stream_token):
 
 @app.route("/")
 def index():
-    init_cam_dims()
     return render_template("index.html")
 
 
